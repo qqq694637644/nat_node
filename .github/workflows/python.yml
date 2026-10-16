@@ -34,6 +34,8 @@ jobs:
           git clone --depth 1 --branch gpt/xtcp-reverse-socks-exit \
             https://github.com/qqq694637644/x-ui.git "$RUNNER_TEMP/x-ui"
           cd "$RUNNER_TEMP/x-ui"
+          go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestReverseSocksWebConfigSecretsAndLifecycle'
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/x-ui-panel" .
           go build -o "$RUNNER_TEMP/reverse-socks-exit" ./cmd/reverse-socks-exit
       - name: Run real Go/Python + WARP SOCKS5 simulation
         env:
