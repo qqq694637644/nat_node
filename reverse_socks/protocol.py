@@ -1,9 +1,9 @@
-"""Shared RSX1 wire protocol. Keep in sync with x-ui/reverseexit/protocol.go."""
+"""RSX2: TCP control frames and unreliable QUIC UDP datagrams."""
 
 import ipaddress
 import struct
 
-MAGIC = b"RSX1"
+MAGIC = b"RSX2"
 HEADER = struct.Struct("!BII")
 MAX_PAYLOAD = 65535
 TCP_CHUNK = 16384
@@ -14,10 +14,11 @@ TCP_DATA = 3
 TCP_FIN = 4
 TCP_RST = 5
 OPEN_UDP = 6
-UDP_DATA = 7
+UDP_RESULT = 7
 UDP_CLOSE = 8
 PING = 9
 PONG = 10
+UDP_LINK_MAX = 1100
 
 
 def encode_address(host: str, port: int) -> bytes:
@@ -78,3 +79,20 @@ def parse_udp_packet(packet: bytes) -> tuple[str, int, bytes]:
         raise ValueError("invalid or fragmented SOCKS UDP packet")
     host, port, offset = decode_address(packet, 3)
     return host, port, packet[offset:]
+
+
+def encode_link_datagram(sid: int, packet: bytes) -> bytes:
+    if sid < 1 or sid > 0xFFFFFFFF or len(packet) + 4 > UDP_LINK_MAX:
+        raise ValueError("QUIC datagram exceeds 1100 bytes or invalid session")
+    parse_udp_packet(packet)
+    return struct.pack("!I", sid) + packet
+
+
+def decode_link_datagram(data: bytes) -> tuple[int, bytes]:
+    if len(data) < 9 or len(data) > UDP_LINK_MAX:
+        raise ValueError("invalid datagram length")
+    sid = struct.unpack_from("!I", data)[0]
+    if sid == 0:
+        raise ValueError("zero UDP session")
+    parse_udp_packet(data[4:])
+    return sid, data[4:]

@@ -1,23 +1,28 @@
-"""Runs against the real Go agent when REVERSE_SOCKS_EXIT_BIN is set.
+"""Python node -> fake frpc QUIC DATAGRAM -> Go Agent -> fake WARP SOCKS5.
 
-All traffic stays on 127.0.0.1: this verifies the Python/Go wire protocol,
-TCP duplex streams, UDP ASSOCIATE, DNS-style UDP, concurrency and reconnect,
-without requiring frps or WARP on the CI host.
+The fake WARP SOCKS5 endpoint performs real TCP and UDP loopback forwarding.
+There is no direct-to-target path available to the Go exit agent.
 """
 
 import asyncio
 import os
 from pathlib import Path
 import socket
-import struct
 import time
 import unittest
 
 from reverse_socks import protocol as p
 from reverse_socks.node import Node
+from tests.mock_warp import FakeWarp, FakeFrpcDatagram
 
 EXIT_BIN = os.environ.get("REVERSE_SOCKS_EXIT_BIN", "")
 TOKEN = "test-secret-longer-than-sixteen-chars"
+
+
+def free_udp_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 class EchoUDP(asyncio.DatagramProtocol):
@@ -32,17 +37,37 @@ class EchoUDP(asyncio.DatagramProtocol):
                      "set REVERSE_SOCKS_EXIT_BIN to the compiled Go agent")
 class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.node = await Node(TOKEN, socks_port=0, mux_port=0).start()
+        self.node_app_port = free_udp_port()
+        self.node_frpc_port = free_udp_port()
+        self.exit_app_port = free_udp_port()
+        self.exit_frpc_port = free_udp_port()
+        self.node = await Node(
+            TOKEN, socks_port=0, mux_port=0,
+            udp_port=self.node_app_port, frpc_udp_port=self.node_frpc_port).start()
         self.tcp = await asyncio.start_server(self._tcp_echo, "127.0.0.1", 0)
         loop = asyncio.get_running_loop()
         self.udp_transport, _ = await loop.create_datagram_endpoint(
             EchoUDP, local_addr=("127.0.0.1", 0))
+        self.node_frpc, node_frpc_protocol = await loop.create_datagram_endpoint(
+            lambda: FakeFrpcDatagram(("127.0.0.1", self.node_app_port)),
+            local_addr=("127.0.0.1", self.node_frpc_port))
+        self.exit_frpc, exit_frpc_protocol = await loop.create_datagram_endpoint(
+            lambda: FakeFrpcDatagram(("127.0.0.1", self.exit_app_port)),
+            local_addr=("127.0.0.1", self.exit_frpc_port))
+        # The two fake frpc endpoints forward across the same logical P2P link.
+        # Override target send method to emulate cross-site QUIC DATAGRAM:
+        node_frpc_protocol.partner = exit_frpc_protocol
+        exit_frpc_protocol.partner = node_frpc_protocol
+        self.warp = await FakeWarp().start()
         self.go = None
         await self.start_agent()
 
     async def asyncTearDown(self):
         await self.stop_agent()
         self.udp_transport.close()
+        self.node_frpc.close()
+        self.exit_frpc.close()
+        await self.warp.stop()
         self.tcp.close()
         await self.tcp.wait_closed()
         await self.node.stop()
@@ -60,6 +85,9 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         env = dict(os.environ, REVERSE_SOCKS_TOKEN=TOKEN)
         self.go = await asyncio.create_subprocess_exec(
             EXIT_BIN, "-visitor", f"127.0.0.1:{self.node.mux_port}",
+            "-udp-bind", f"127.0.0.1:{self.exit_app_port}",
+            "-udp-frpc", f"127.0.0.1:{self.exit_frpc_port}",
+            "-warp-socks", f"127.0.0.1:{self.warp.port}",
             "-retry", "100ms", env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL)
@@ -83,7 +111,7 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
                 break
             await asyncio.sleep(0.02)
 
-    async def socks(self, command: int, host: str, port: int):
+    async def socks(self, command: int, host: str, port: int, expected=0):
         reader, writer = await asyncio.open_connection("127.0.0.1",
                                                        self.node.socks_port)
         writer.write(b"\x05\x01\x00")
@@ -93,7 +121,7 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         header = await asyncio.wait_for(reader.readexactly(4), 12)
         self.assertEqual(header[:1], b"\x05")
-        self.assertEqual(header[1], 0, f"SOCKS command {command} failed: {header.hex()}")
+        self.assertEqual(header[1], expected, f"unexpected SOCKS reply: {header.hex()}")
         self.assertEqual(header[3], 1)
         addr = await reader.readexactly(6)
         bind, bindport, _ = p.decode_address(bytes((1,)) + addr)
@@ -122,6 +150,7 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         print(f"loopback TCP mux throughput: {len(body) / elapsed / 1048576:.1f} MiB/s")
         await asyncio.gather(*(self.echo_tcp(f"session-{i}".encode() * 1000)
                                for i in range(20)))
+        self.assertGreaterEqual(self.warp.tcp_connects, 21)
 
     async def test_udp_associate(self):
         reader, writer, bind, bindport = await self.socks(3, "0.0.0.0", 0)
@@ -138,6 +167,14 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
                 src_host, src_port, echoed = p.parse_udp_packet(data)
                 self.assertEqual((src_host, src_port, echoed),
                                  ("127.0.0.1", dst, body))
+            self.assertEqual(self.warp.udp_associates, 1)
+            self.assertEqual(self.warp.udp_packets, 25)
+            # No automatic UDP-to-TCP fallback for oversized datagrams.
+            await loop.sock_sendto(sock, p.udp_packet("127.0.0.1", dst, b"X" * 1500),
+                                   (bind, bindport))
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(loop.sock_recvfrom(sock, 65535), 0.5)
+            self.assertEqual(self.warp.udp_packets, 25)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -148,3 +185,15 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         await self.stop_agent()
         await self.start_agent()
         await self.echo_tcp(b"after")
+
+    async def test_warp_failure_never_dials_target(self):
+        before = self.warp.tcp_connects
+        await self.warp.close_listener()
+        _, writer, _, _ = await self.socks(
+            1, "127.0.0.1", self.tcp.sockets[0].getsockname()[1], expected=5)
+        writer.close()
+        await writer.wait_closed()
+        self.assertEqual(self.warp.tcp_connects, before)
+        _, writer, _, _ = await self.socks(3, "0.0.0.0", 0, expected=5)
+        writer.close()
+        await writer.wait_closed()

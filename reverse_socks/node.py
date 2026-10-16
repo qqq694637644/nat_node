@@ -15,7 +15,6 @@ from . import protocol as p
 LOG = logging.getLogger("reverse_socks")
 MAX_SESSIONS = 1024
 TCP_QUEUE = 32
-UDP_QUEUE = 128
 
 
 async def read_socks_address(reader: asyncio.StreamReader, atyp: int) -> tuple[str, int]:
@@ -79,18 +78,31 @@ class UDPSession:
         self.sid = sid
         self.relay = relay
         self.closed = asyncio.Event()
+        self.result = asyncio.get_running_loop().create_future()
 
     def fail(self):
         self.closed.set()
+        if not self.result.done():
+            self.result.set_exception(ConnectionError("UDP association closed"))
+
+    def ready(self, data: bytes):
+        if self.result.done():
+            return
+        if data == b"\x00":
+            self.result.set_result(None)
+        else:
+            self.result.set_exception(ConnectionError("WARP UDP ASSOCIATE failed"))
 
 
 class Tunnel:
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+                 node):
         self.reader = reader
         self.writer = writer
+        self.node = node
         self.lock = asyncio.Lock()
         self.sessions: dict[int, TCPSession | UDPSession] = {}
-        self.next_id = 0
+        self.next_id = secrets.randbelow(0xFFFFFFFF - 1)
         self.alive = True
 
     def register(self, session_type, *args):
@@ -126,10 +138,10 @@ class Tunnel:
         session = self.register(UDPSession, relay)
         try:
             await self.send(p.OPEN_UDP, session.sid)
+            await asyncio.wait_for(session.result, 12)
             return session
         except BaseException:
-            self.sessions.pop(session.sid, None)
-            session.fail()
+            await self.close_session(session)
             raise
 
     async def close_session(self, session, notify: bool = True):
@@ -164,8 +176,8 @@ class Tunnel:
                     if session.closed:
                         self.sessions.pop(sid, None)
                 elif isinstance(session, UDPSession):
-                    if kind == p.UDP_DATA and not session.closed.is_set():
-                        session.relay.forward(data)
+                    if kind == p.UDP_RESULT:
+                        session.ready(data)
                     elif kind == p.UDP_CLOSE:
                         session.fail()
                         self.sessions.pop(sid, None)
@@ -190,7 +202,6 @@ class UDPRelay(asyncio.DatagramProtocol):
         self.transport = None
         self.peer = None
         self.session = None
-        self.outgoing = asyncio.Queue(maxsize=UDP_QUEUE)
 
     def connection_made(self, transport):
         self.transport = transport
@@ -205,9 +216,9 @@ class UDPRelay(asyncio.DatagramProtocol):
             return
         try:
             p.parse_udp_packet(data)
-            self.outgoing.put_nowait(data)
-        except (ValueError, asyncio.QueueFull):
-            pass  # UDP drops instead of stalling the TCP mux.
+            self.tunnel.node.send_udp(self.session.sid, data)
+        except ValueError:
+            pass  # Drop an oversized/fragmented datagram; NEVER send over TCP.
 
     def forward(self, data: bytes):
         if not self.transport or self.peer is None:
@@ -218,28 +229,55 @@ class UDPRelay(asyncio.DatagramProtocol):
             return
         self.transport.sendto(data, self.peer)
 
-    async def send_loop(self):
-        while not self.session.closed.is_set():
-            data = await self.outgoing.get()
-            await self.tunnel.send(p.UDP_DATA, self.session.sid, data)
+class DatagramLink(asyncio.DatagramProtocol):
+    def __init__(self, node, allowed_peer):
+        self.node = node
+        self.allowed_peer = allowed_peer
+
+    def datagram_received(self, data, addr):
+        if addr != self.allowed_peer:
+            return
+        try:
+            sid, packet = p.decode_link_datagram(data)
+        except ValueError:
+            return
+        tunnel = self.node.tunnel
+        if not tunnel or not tunnel.alive:
+            return
+        session = tunnel.sessions.get(sid)
+        if isinstance(session, UDPSession) and not session.closed.is_set():
+            session.relay.forward(packet)
 
 
 class Node:
     def __init__(self, token: str, socks_host="127.0.0.1", socks_port=1080,
-                 mux_host="127.0.0.1", mux_port=9312):
+                 mux_host="127.0.0.1", mux_port=9312,
+                 udp_port=9314, frpc_udp_port=9313):
         if len(token) < 16:
             raise ValueError("REVERSE_SOCKS_TOKEN must contain at least 16 characters")
         self.token = token.encode()
         self.socks_addr = (socks_host, socks_port)
         self.mux_addr = (mux_host, mux_port)
+        if socks_host != "127.0.0.1" or mux_host != "127.0.0.1":
+            raise ValueError("SOCKS and XTCP service must remain on 127.0.0.1")
+        if not 0 <= udp_port <= 65535 or not 1 <= frpc_udp_port <= 65535:
+            raise ValueError("invalid UDP endpoints")
+        self.udp_port_config = udp_port
+        self.frpc_udp_port = frpc_udp_port
         self.tunnel = None
         self.socks_server = None
         self.mux_server = None
+        self.udp_transport = None
 
     async def start(self):
         # The mux port is an internal frpc destination; do not expose it publicly.
         self.mux_server = await asyncio.start_server(self._accept_agent, *self.mux_addr)
         self.socks_server = await asyncio.start_server(self._socks_client, *self.socks_addr)
+        loop = asyncio.get_running_loop()
+        self.udp_transport, _ = await loop.create_datagram_endpoint(
+            lambda: DatagramLink(self, ("127.0.0.1", self.frpc_udp_port)),
+            local_addr=("127.0.0.1", self.udp_port_config),
+            family=socket.AF_INET)
         return self
 
     async def stop(self):
@@ -247,6 +285,8 @@ class Node:
             if server:
                 server.close()
                 await server.wait_closed()
+        if self.udp_transport:
+            self.udp_transport.close()
         if self.tunnel:
             self.tunnel.writer.close()
             try:
@@ -262,6 +302,14 @@ class Node:
     def mux_port(self):
         return self.mux_server.sockets[0].getsockname()[1]
 
+    @property
+    def udp_port(self):
+        return self.udp_transport.get_extra_info("sockname")[1]
+
+    def send_udp(self, sid: int, packet: bytes):
+        data = p.encode_link_datagram(sid, packet)
+        self.udp_transport.sendto(data, ("127.0.0.1", self.frpc_udp_port))
+
     async def _accept_agent(self, reader, writer):
         challenge = secrets.token_bytes(32)
         try:
@@ -273,7 +321,7 @@ class Node:
                 raise PermissionError("invalid agent token")
             if self.tunnel is not None and self.tunnel.alive:
                 raise ConnectionError("agent already connected")
-            tunnel = Tunnel(reader, writer)
+            tunnel = Tunnel(reader, writer, self)
             self.tunnel = tunnel
             LOG.info("exit agent connected")
             await tunnel.read_loop()
@@ -375,12 +423,12 @@ class Node:
         transport, _ = await loop.create_datagram_endpoint(
             lambda: relay, local_addr=("127.0.0.1", 0), family=socket.AF_INET)
         session = None
-        sender = None
+        replied = False
         try:
             session = await tunnel.open_udp(relay)
             relay.session = session
-            sender = asyncio.create_task(relay.send_loop())
             await socks_reply(writer, 0, "127.0.0.1", transport.get_extra_info("sockname")[1])
+            replied = True
             control = asyncio.create_task(reader.read(1))
             closed = asyncio.create_task(session.closed.wait())
             done, pending = await asyncio.wait((control, closed),
@@ -390,31 +438,39 @@ class Node:
             await asyncio.gather(*pending, return_exceptions=True)
             for task in done:
                 task.result()
-        except (ConnectionError, OSError):
-            pass
+        except (ConnectionError, OSError, asyncio.TimeoutError):
+            if not replied:
+                await socks_reply(writer, 5)
         finally:
             if session:
                 await tunnel.close_session(session)
-            if sender:
-                sender.cancel()
-                await asyncio.gather(sender, return_exceptions=True)
             transport.close()
 
 
 async def run():
-    parser = argparse.ArgumentParser(description="RSX1 reverse SOCKS5 NAT node")
+    parser = argparse.ArgumentParser(description="RSX2 QUIC DATAGRAM SOCKS5 NAT node")
     parser.add_argument("--socks", default="127.0.0.1:1080", help="local SOCKS5 bind")
     parser.add_argument("--mux", default="127.0.0.1:9312", help="frpc XTCP proxy target")
+    parser.add_argument("--udp-bind", default="127.0.0.1:9314",
+                        help="Python RSX2 datagram socket (frpc datagram.peerAddr)")
+    parser.add_argument("--udp-frpc", default="127.0.0.1:9313",
+                        help="frpc datagram.listenAddr")
     args = parser.parse_args()
     token = os.environ.get("REVERSE_SOCKS_TOKEN", "")
     if not token:
         parser.error("set REVERSE_SOCKS_TOKEN")
     socks_host, socks_port = args.socks.rsplit(":", 1)
     mux_host, mux_port = args.mux.rsplit(":", 1)
+    udp_host, udp_port = args.udp_bind.rsplit(":", 1)
+    frpc_host, frpc_port = args.udp_frpc.rsplit(":", 1)
+    if udp_host != "127.0.0.1" or frpc_host != "127.0.0.1":
+        parser.error("UDP endpoints must be 127.0.0.1")
     node = await Node(token, socks_host, int(socks_port),
-                      mux_host, int(mux_port)).start()
-    LOG.info("SOCKS5 at %s:%d; XTCP mux target at %s:%d",
-             socks_host, node.socks_port, mux_host, node.mux_port)
+                      mux_host, int(mux_port), int(udp_port),
+                      int(frpc_port)).start()
+    LOG.info("SOCKS5 %s:%d; XTCP TCP %s:%d; DATAGRAM UDP 127.0.0.1:%d -> %d",
+             socks_host, node.socks_port, mux_host, node.mux_port,
+             node.udp_port, node.frpc_udp_port)
     async with node.socks_server, node.mux_server:
         await asyncio.gather(node.socks_server.serve_forever(),
                              node.mux_server.serve_forever())
