@@ -10,8 +10,11 @@ import os
 import secrets
 import socket
 import struct
+import time
 
 from . import protocol as p
+from .scheduler import FairFrameWriter
+from .rsx3 import TCPSessionV3, TunnelV3, accept_control, accept_data, bridge_tcp
 
 LOG = logging.getLogger("reverse_socks")
 MAX_SESSIONS = 1024
@@ -119,7 +122,7 @@ class Tunnel:
         self.reader = reader
         self.writer = writer
         self.node = node
-        self.lock = asyncio.Lock()
+        self.sender = FairFrameWriter(writer)
         self.sessions: dict[int, TCPSession | UDPSession] = {}
         self.next_id = secrets.randbelow(0xFFFFFFFF - 1)
         self.alive = True
@@ -137,17 +140,16 @@ class Tunnel:
     async def send(self, kind: int, sid: int, data=b""):
         if not self.alive:
             raise ConnectionError("tunnel closed")
-        if len(data) > p.MAX_PAYLOAD:
-            raise ValueError("frame too large")
-        async with self.lock:
-            self.writer.write(p.HEADER.pack(kind, sid, len(data)) + data)
-            await self.writer.drain()
+        await self.sender.send(kind, sid, data)
 
     async def open_tcp(self, host: str, port: int):
         session = self.register(TCPSession)
+        started = time.monotonic()
         try:
             await self.send(p.OPEN_TCP, session.sid, p.encode_address(host, port))
             await asyncio.wait_for(session.result, 12)
+            LOG.info("RSX2 metric open_tcp sid=%d confirm_ms=%.1f",
+                     session.sid, (time.monotonic() - started) * 1000)
             return session
         except BaseException:
             await self.close_session(session, notify=True)
@@ -207,6 +209,7 @@ class Tunnel:
             for session in list(self.sessions.values()):
                 session.fail()
             self.sessions.clear()
+            await self.sender.close()
             self.writer.close()
             try:
                 await self.writer.wait_closed()
@@ -271,10 +274,13 @@ class DatagramLink(asyncio.DatagramProtocol):
 class Node:
     def __init__(self, token: str, socks_host="127.0.0.1", socks_port=1080,
                  mux_host="127.0.0.1", mux_port=9312,
-                 udp_port=9314, frpc_udp_port=9313):
+                  udp_port=9314, frpc_udp_port=9313, protocol="rsx3"):
         if len(token) < 16:
             raise ValueError("REVERSE_SOCKS_TOKEN must contain at least 16 characters")
         self.token = token.encode()
+        if protocol not in ("rsx2", "rsx3"):
+            raise ValueError("protocol must be rsx2 or rsx3")
+        self.protocol = protocol
         self.socks_addr = (socks_host, socks_port)
         self.mux_addr = (mux_host, mux_port)
         if socks_host != "127.0.0.1" or mux_host != "127.0.0.1":
@@ -309,8 +315,8 @@ class Node:
         if self.tunnel:
             self.tunnel.writer.close()
             try:
-                await self.tunnel.writer.wait_closed()
-            except (ConnectionError, OSError):
+                await asyncio.wait_for(self.tunnel.writer.wait_closed(), 3)
+            except (ConnectionError, OSError, asyncio.TimeoutError):
                 pass
 
     @property
@@ -330,6 +336,30 @@ class Node:
         self.udp_transport.sendto(data, ("127.0.0.1", self.frpc_udp_port))
 
     async def _accept_agent(self, reader, writer):
+        if self.protocol == "rsx3":
+            try:
+                # A real RSX3 connection identifies its purpose first.
+                # The frpc QUIC keepalive opens and closes an empty stream,
+                # which must not flood the logs with false auth failures.
+                preface = await asyncio.wait_for(reader.readexactly(4), 5)
+                if preface == b"RSX3":
+                    await accept_control(self, reader, writer)
+                elif preface == b"R3D1":
+                    await accept_data(self, reader, writer)
+                else:
+                    raise PermissionError("unrecognized RSX3 stream preface")
+            except asyncio.IncompleteReadError:
+                pass  # frpc's zero-byte keepalive test, not an Agent failure
+            except (PermissionError, ConnectionError, asyncio.TimeoutError,
+                    OSError, ValueError) as exc:
+                LOG.warning("RSX3 connection rejected: %s", exc)
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except (ConnectionError, OSError):
+                    pass
+            return
         challenge = secrets.token_bytes(32)
         try:
             writer.write(p.MAGIC + challenge)
@@ -403,12 +433,20 @@ class Node:
             return
         try:
             await socks_reply(writer, 0)
+            if isinstance(session, TCPSessionV3):
+                await bridge_tcp(session, reader, writer)
+                return
 
             async def client_to_exit():
                 while True:
                     # Keep application reads behind the opposite endpoint's
                     # actual drain rate; don't reset legitimate slow streams.
+                    started_wait = time.monotonic()
                     await session.credits.acquire()
+                    waited = time.monotonic() - started_wait
+                    if waited > 0.100:
+                        LOG.warning("RSX2 metric window_wait sid=%d wait_ms=%.1f",
+                                    session.sid, waited * 1000)
                     data = await reader.read(p.TCP_CHUNK)
                     if not data:
                         break
@@ -430,7 +468,12 @@ class Node:
                             await writer.drain()
                         return
                     writer.write(data)
+                    drain_started = time.monotonic()
                     await writer.drain()
+                    drain_waited = time.monotonic() - drain_started
+                    if drain_waited > 0.100:
+                        LOG.warning("RSX2 metric browser_drain sid=%d drain_ms=%.1f",
+                                    session.sid, drain_waited * 1000)
                     credits_ready += 1
                     if credits_ready >= TCP_WINDOW_BATCH:
                         await tunnel.send(p.TCP_WINDOW, session.sid,
@@ -482,7 +525,9 @@ class Node:
 
 
 async def run():
-    parser = argparse.ArgumentParser(description="RSX2 QUIC DATAGRAM SOCKS5 NAT node")
+    parser = argparse.ArgumentParser(description="RSX3 per-TCP-stream QUIC + DATAGRAM SOCKS5 NAT node")
+    parser.add_argument("--protocol", choices=("rsx3", "rsx2"), default="rsx3",
+                        help="RSX3 independent XTCP/QUIC streams (default), RSX2 legacy control mux")
     parser.add_argument("--socks", default="127.0.0.1:1080", help="local SOCKS5 bind")
     parser.add_argument("--mux", default="127.0.0.1:9312", help="frpc XTCP proxy target")
     parser.add_argument("--udp-bind", default="127.0.0.1:9314",
@@ -501,8 +546,9 @@ async def run():
         parser.error("UDP endpoints must be 127.0.0.1")
     node = await Node(token, socks_host, int(socks_port),
                       mux_host, int(mux_port), int(udp_port),
-                      int(frpc_port)).start()
-    LOG.info("SOCKS5 %s:%d; XTCP TCP %s:%d; DATAGRAM UDP 127.0.0.1:%d -> %d",
+                      int(frpc_port), protocol=args.protocol).start()
+    LOG.info("%s SOCKS5 %s:%d; XTCP TCP %s:%d; DATAGRAM UDP 127.0.0.1:%d -> %d",
+             args.protocol.upper(),
              socks_host, node.socks_port, mux_host, node.mux_port,
              node.udp_port, node.frpc_udp_port)
     async with node.socks_server, node.mux_server:
