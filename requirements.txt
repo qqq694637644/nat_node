@@ -1,0 +1,8 @@
+# nat_node is intentionally implemented with Python 3.13's standard library only.
+# There are NO third-party Python runtime packages to install.
+#
+# This file is kept so deployments and CI can explicitly check dependencies:
+#   python3.13 -m pip install --no-index -r requirements.txt
+#
+# The custom frpc binary, overseas x-ui Go agent, and WARP SOCKS5 service
+# are separate programs, not packages installed via pip.

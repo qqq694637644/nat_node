@@ -15,8 +15,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m compileall -q reverse_socks tests
-      - run: python -m unittest -v tests.test_protocol
+      - name: Verify Python 3.13 sources compile
+        run: python -m compileall -q reverse_socks tests
+      - name: Install zero dependencies offline and test using only stdlib
+        run: |
+          python -m venv "$RUNNER_TEMP/nat-node-venv"
+          "$RUNNER_TEMP/nat-node-venv/bin/python" -m pip install --no-index --disable-pip-version-check -r requirements.txt
+          "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m unittest -v tests.test_dependencies tests.test_protocol
+          "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m reverse_socks --help
 
   cross-language-warp:
     name: RSX2 Go/Python + fake WARP SOCKS5 + DATAGRAM
@@ -40,4 +46,4 @@ jobs:
       - name: Run real Go/Python + WARP SOCKS5 simulation
         env:
           REVERSE_SOCKS_EXIT_BIN: ${{ runner.temp }}/reverse-socks-exit
-        run: python -m unittest -v tests.test_protocol tests.test_end_to_end
+        run: python -S -m unittest -v tests.test_dependencies tests.test_protocol tests.test_end_to_end
