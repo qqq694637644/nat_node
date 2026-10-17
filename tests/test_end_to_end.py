@@ -88,6 +88,7 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
             "-udp-bind", f"127.0.0.1:{self.exit_app_port}",
             "-udp-frpc", f"127.0.0.1:{self.exit_frpc_port}",
             "-warp-socks", f"127.0.0.1:{self.warp.port}",
+            "-warp-probe", f"127.0.0.1:{self.tcp.sockets[0].getsockname()[1]}",
             "-retry", "100ms", env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL)
@@ -152,6 +153,31 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
                                for i in range(20)))
         self.assertGreaterEqual(self.warp.tcp_connects, 21)
 
+    async def test_slow_warp_stream_uses_backpressure_not_reset(self):
+        # 10ms per 16KiB chunk on both directions exceeds the original
+        # 32-frame queue under continuous echo load. RSX2 now waits for
+        # receiver-granted credits instead of terminating the TCP session.
+        self.warp.delay_seconds = 0.01
+        large = bytes(range(256)) * 8192  # 2 MiB
+        await asyncio.wait_for(asyncio.gather(
+            self.echo_tcp(large),
+            self.echo_tcp(b"independent-fast-stream" * 1000),
+        ), 60)
+
+    async def test_delayed_browser_reader_keeps_tcp_alive(self):
+        reader, writer, _, _ = await self.socks(
+            1, "127.0.0.1", self.tcp.sockets[0].getsockname()[1])
+        payload = bytes(range(256)) * 4096  # 1 MiB
+        try:
+            writer.write(payload)
+            await writer.drain()
+            await asyncio.sleep(0.5)  # browser temporarily stops reading
+            echoed = await asyncio.wait_for(reader.readexactly(len(payload)), 35)
+            self.assertEqual(echoed, payload)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
     async def test_udp_associate(self):
         reader, writer, bind, bindport = await self.socks(3, "0.0.0.0", 0)
         loop = asyncio.get_running_loop()
@@ -167,7 +193,10 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
                 src_host, src_port, echoed = p.parse_udp_packet(data)
                 self.assertEqual((src_host, src_port, echoed),
                                  ("127.0.0.1", dst, body))
-            self.assertEqual(self.warp.udp_associates, 1)
+            # The independent WARP health probe opens an additional
+            # UDP ASSOCIATE; neither it nor the SOCKS session sends data
+            # directly to a target.
+            self.assertGreaterEqual(self.warp.udp_associates, 1)
             self.assertEqual(self.warp.udp_packets, 25)
             # No automatic UDP-to-TCP fallback for oversized datagrams.
             await loop.sock_sendto(sock, p.udp_packet("127.0.0.1", dst, b"X" * 1500),

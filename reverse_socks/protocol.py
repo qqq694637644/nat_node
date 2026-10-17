@@ -13,6 +13,7 @@ TCP_RESULT = 2
 TCP_DATA = 3
 TCP_FIN = 4
 TCP_RST = 5
+TCP_WINDOW = 11  # receiver grants another DATA frame only after drain()
 OPEN_UDP = 6
 UDP_RESULT = 7
 UDP_CLOSE = 8

@@ -45,6 +45,7 @@ class FakeWarp:
         self.udp_associates = 0
         self.udp_packets = 0
         self.connections = set()
+        self.delay_seconds = 0
 
     async def start(self):
         self.server = await asyncio.start_server(self._client, "127.0.0.1", 0)
@@ -92,6 +93,8 @@ class FakeWarp:
                 async def pump(src, dst):
                     try:
                         while data := await src.read(16384):
+                            if self.delay_seconds:
+                                await asyncio.sleep(self.delay_seconds)
                             dst.write(data)
                             await dst.drain()
                         if dst.can_write_eof():

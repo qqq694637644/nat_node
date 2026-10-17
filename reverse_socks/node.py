@@ -9,12 +9,15 @@ import logging
 import os
 import secrets
 import socket
+import struct
 
 from . import protocol as p
 
 LOG = logging.getLogger("reverse_socks")
 MAX_SESSIONS = 1024
 TCP_QUEUE = 32
+TCP_WINDOW = 32
+TCP_WINDOW_BATCH = 8
 
 
 async def read_socks_address(reader: asyncio.StreamReader, atyp: int) -> tuple[str, int]:
@@ -39,7 +42,9 @@ async def socks_reply(writer: asyncio.StreamWriter, status: int, host="0.0.0.0",
 class TCPSession:
     def __init__(self, sid: int):
         self.sid = sid
-        self.queue = asyncio.Queue(maxsize=TCP_QUEUE)
+        # 32 outstanding DATA frames plus room for FIN/RST.
+        self.queue = asyncio.Queue(maxsize=TCP_QUEUE + 2)
+        self.credits = asyncio.BoundedSemaphore(TCP_WINDOW)
         self.result = asyncio.get_running_loop().create_future()
         self.closed = False
 
@@ -67,10 +72,24 @@ class TCPSession:
         if kind == p.TCP_RST:
             self.fail("remote reset")
             return
+        if kind == p.TCP_WINDOW:
+            if len(data) != 2:
+                self.fail("invalid TCP window update")
+                return
+            count = struct.unpack("!H", data)[0]
+            if not 1 <= count <= TCP_WINDOW:
+                self.fail("invalid TCP window credit count")
+                return
+            try:
+                for _ in range(count):
+                    self.credits.release()
+            except ValueError:
+                self.fail("unexpected TCP window update")
+            return
         try:
             self.queue.put_nowait((kind, data))
         except asyncio.QueueFull:
-            self.fail("TCP receiver too slow")
+            self.fail("peer violated TCP receive window")
 
 
 class UDPSession:
@@ -171,7 +190,7 @@ class Tunnel:
                     continue
                 session = self.sessions.get(sid)
                 if isinstance(session, TCPSession) and kind in (p.TCP_RESULT, p.TCP_DATA,
-                                                                 p.TCP_FIN, p.TCP_RST):
+                                                                 p.TCP_FIN, p.TCP_RST, p.TCP_WINDOW):
                     session.deliver(kind, data)
                     if session.closed:
                         self.sessions.pop(sid, None)
@@ -386,22 +405,37 @@ class Node:
             await socks_reply(writer, 0)
 
             async def client_to_exit():
-                while data := await reader.read(p.TCP_CHUNK):
+                while True:
+                    # Keep application reads behind the opposite endpoint's
+                    # actual drain rate; don't reset legitimate slow streams.
+                    await session.credits.acquire()
+                    data = await reader.read(p.TCP_CHUNK)
+                    if not data:
+                        break
                     await tunnel.send(p.TCP_DATA, session.sid, data)
                 await tunnel.send(p.TCP_FIN, session.sid)
 
             async def exit_to_client():
+                credits_ready = 0
                 while True:
                     kind, data = await session.queue.get()
                     if kind == p.TCP_RST:
                         raise ConnectionError("remote TCP stream reset")
                     if kind == p.TCP_FIN:
+                        if credits_ready:
+                            await tunnel.send(p.TCP_WINDOW, session.sid,
+                                              struct.pack("!H", credits_ready))
                         if writer.can_write_eof():
                             writer.write_eof()
                             await writer.drain()
                         return
                     writer.write(data)
                     await writer.drain()
+                    credits_ready += 1
+                    if credits_ready >= TCP_WINDOW_BATCH:
+                        await tunnel.send(p.TCP_WINDOW, session.sid,
+                                          struct.pack("!H", credits_ready))
+                        credits_ready = 0
 
             tasks = [asyncio.create_task(client_to_exit()),
                      asyncio.create_task(exit_to_client())]
