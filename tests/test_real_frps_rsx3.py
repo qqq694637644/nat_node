@@ -72,6 +72,7 @@ class RealFrpRSX3Integration(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="rsx3-real-frps-")
         self.base = Path(self.tmp.name)
         self.processes = []
+        self.process_names = []
         self.log_files = []
         self.stun_a = self.stun_b = None
         self.node = None
@@ -119,6 +120,7 @@ class RealFrpRSX3Integration(unittest.IsolatedAsyncioTestCase):
         process = await asyncio.create_subprocess_exec(*map(str, args),
                                                        stdout=log, stderr=log, env=env)
         self.processes.append(process)
+        self.process_names.append(name)
         return process
 
     def write_config(self, name, contents):
@@ -145,9 +147,12 @@ class RealFrpRSX3Integration(unittest.IsolatedAsyncioTestCase):
         while time.monotonic() < deadline:
             if self.node.tunnel is not None and self.node.tunnel.alive:
                 return
-            for process in self.processes:
+            for name, process in zip(self.process_names, self.processes):
                 if process.returncode is not None:
-                    self.fail(f"subprocess exited early with code {process.returncode}")
+                    logs = "\n".join(
+                        f"{path.name}:\n{path.read_text(errors='replace')[-4500:]}"
+                        for path in self.base.glob("*.log"))
+                    self.fail(f"{name} exited early with code {process.returncode}:\n{logs}")
             await asyncio.sleep(0.2)
         logs = "\n".join(f"{path.name}:\n{path.read_text(errors='replace')[-3000:]}"
                          for path in self.base.glob("*.log"))
