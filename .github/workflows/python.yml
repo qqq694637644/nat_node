@@ -94,3 +94,14 @@ jobs:
           RSX3_BULK_BYTES: '1048576'
           RSX3_TEST_BRUTAL: '1'
         run: python -S -m unittest -v tests.test_real_frps_rsx3
+      - name: Verify above-64-Mbps Brutal on both XTCP endpoints
+        env:
+          RSX3_TEST_FRPS_BIN: ${{ runner.temp }}/frps069/frp_0.69.0_linux_amd64/frps
+          RSX3_TEST_FRPC_BIN: ${{ runner.temp }}/custom-frpc
+          REVERSE_SOCKS_EXIT_BIN: ${{ runner.temp }}/reverse-socks-exit
+          RSX3_BULK_BYTES: '1048576'
+          RSX3_TEST_BRUTAL: '1'
+          RSX3_TEST_BRUTAL_TARGET_MBPS: '128'
+          RSX3_TEST_BRUTAL_MAX_MBPS: '192'
+          RSX3_TEST_EXTRA_STREAMS: '3'
+        run: python -S -m unittest -v tests.test_real_frps_rsx3

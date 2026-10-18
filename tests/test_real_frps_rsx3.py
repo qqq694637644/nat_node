@@ -104,7 +104,13 @@ class RealFrpRSX3Integration(unittest.IsolatedAsyncioTestCase):
                 print("real-frpc integration: fake WARP shutdown exceeded 5s", flush=True)
         if self.echo:
             self.echo.close()
-            await self.echo.wait_closed()
+            try:
+                await asyncio.wait_for(self.echo.wait_closed(), 5)
+            except asyncio.TimeoutError:
+                # A failed large QUIC burst can leave a SOCKS5/TCP handler
+                # waiting for an already-disconnected remote peer. Preserve
+                # its failure output instead of hanging CI teardown forever.
+                print("real-frpc integration: TCP echo shutdown exceeded 5s", flush=True)
         for t in (self.stun_a, self.stun_b):
             if t:
                 t.close()
@@ -225,12 +231,14 @@ log.level = "info"
 """
         brutal = os.getenv("RSX3_TEST_BRUTAL", "") == "1"
         if brutal:
+            target_mbps = int(os.getenv("RSX3_TEST_BRUTAL_TARGET_MBPS", "16"))
+            max_mbps = int(os.getenv("RSX3_TEST_BRUTAL_MAX_MBPS", "24"))
             # Both independently paced XTCP QUIC senders, not the
             # frpc-to-frps control channel and not native VPS UDP.
-            common += """
+            common += f"""
 transport.quic.congestionMode = "brutal"
-transport.quic.targetMbps = 16
-transport.quic.maxMbps = 24
+transport.quic.targetMbps = {target_mbps}
+transport.quic.maxMbps = {max_mbps}
 """
         proxy = common + f"""
 [[proxies]]
@@ -293,21 +301,26 @@ udpProxyURL = "socks5://127.0.0.1:{self.warp.port}"
         await self._wait_online()
         start = time.monotonic()
         bytes_to_test = int(os.getenv("RSX3_BULK_BYTES", "1048576"))
+        extra_streams = int(os.getenv("RSX3_TEST_EXTRA_STREAMS", "12"))
         large = bytes(range(256)) * (bytes_to_test // 256)
         await asyncio.wait_for(asyncio.gather(
             self._socks_echo(large),
-            *(self._socks_echo(f"stream-{i}".encode() * 1024) for i in range(12)),
+            *(self._socks_echo(f"stream-{i}".encode() * 1024) for i in range(extra_streams)),
         ), 85)
         elapsed = time.monotonic() - start
-        print(f"REAL_FRPS_069_RSX3_{len(large)}B_AND_12_STREAMS_PASS elapsed={elapsed:.2f}s")
-        self.assertGreaterEqual(self.warp.tcp_connects, 13)
+        print(f"REAL_FRPS_069_RSX3_{len(large)}B_AND_{extra_streams}_EXTRA_STREAMS_PASS elapsed={elapsed:.2f}s")
+        self.assertGreaterEqual(self.warp.tcp_connects, extra_streams + 1)
         self.assertTrue(any(qlogdir.iterdir()), "quic-go must emit RTT/recovery qlog traces")
         outside = (self.base / "outside-frpc.log").read_text(errors="replace")
         self.assertIn("assistedAddresses: []", outside)
         self.assertIn("XTCP tunnel handshake ready", outside)
         if brutal:
             inside = (self.base / "inside-frpc.log").read_text(errors="replace")
-            self.assertIn("XTCP Proxy QUIC congestion=brutal", inside)
-            self.assertIn("XTCP Visitor QUIC congestion=brutal", outside)
-            print("BOUNDED_BRUTAL_BOTH_XTCP_ENDPOINTS_CONFIRMED")
+            self.assertIn(
+                f"XTCP Proxy QUIC congestion=brutal targetMbps={target_mbps} maxMbps={max_mbps}", inside
+            )
+            self.assertIn(
+                f"XTCP Visitor QUIC congestion=brutal targetMbps={target_mbps} maxMbps={max_mbps}", outside
+            )
+            print(f"BOUNDED_BRUTAL_BOTH_XTCP_ENDPOINTS_CONFIRMED_{target_mbps}_{max_mbps}")
         print("QUIC_QLOG_CREATED_AND_WARP_ONLY_PUBLIC_FALLBACK_DISABLED")

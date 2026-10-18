@@ -88,7 +88,7 @@ transport.quic.maxMbps = 24
 
 原有 `[proxies.natTraversal] bindPort = 39999` 保持不变。境外 x-ui 页面将拥塞模式选为 Brutal、目标 16 Mbps、上限 24 Mbps，保存时自动生成境外 Visitor 对应配置；它仍然只通过本机 `127.0.0.1:40000` WARP SOCKS5 传输 STUN、打洞和 QUIC 数据，拒绝任何直连退路。境内外的 QUIC 发送方向相互独立，配置不影响 frpc/frps 的 TCP 控制连接，不需改官方 frps 0.69.0。
 
-Brutal 是有界的目标速率策略（最长 5 秒丢包采样、最高 64 Mbps 配置、8 MiB 发送窗口上限），不能保证跨境高峰期更快。需要退回稳定模式时，境内删除以上三项，境外 x-ui 选择「CUBIC / 默认」，然后重启两端 frpc。两端无需调整 Python/Go 的 RSX3 协议。
+Brutal 是有界的目标速率策略（最长 5 秒丢包采样、8 MiB 发送窗口上限）。**新版移除了旧 64 Mbps 人为上限**，可设置 96/128、128/192、256/512 等更高目标/上限（单位 Mbps）；仅保留约 73,786 Mbps 的 Go 整数运算安全边界以及已有 QUIC 背压/窗口。提高配置值不能保证高峰期更快，切忌直接调到远超带宽的数值。建议境外从实际稳定的 64/64 起逐级测试，境内独立设置上传速率。需要退回稳定模式时，境内删除以上三项，境外 x-ui 选择「CUBIC / 默认」，然后重启两端 frpc。两端无需调整 Python/Go 的 RSX3 协议。
 
 - Python：`RSX3 metric open_tcp confirm_ms`、`slow_drain` 和 `tcp_summary`（双向字节数/耗时）；RSX2 还记录 `window_wait`、`browser_drain`、发送排队/缓冲 drain 时长。
 - Go：`RSX3 metric open_tcp warp_ms visitor_ms data_auth_ms`、`tcp_summary`（WARP 流量字节数）；RSX2 还有 `warp_connect`、`RSX metric frame_write queued_ms write_ms`。超过 100ms 的写入/等待会输出摘要；不记录 Token、密码或 payload。
