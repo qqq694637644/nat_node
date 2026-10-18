@@ -76,6 +76,20 @@ export REVERSE_SOCKS_TOKEN='<与境内 Python 完全相同的共享密钥>'
 
 ## 流控与诊断
 
+### 境内 / 境外双向 Brutal 风格发送（可选）
+
+最新定制 frpc 支持实验性的 XTCP QUIC 双端 pacing 控制器；必须先升级境内 Windows 与境外 Linux frpc。境内 Proxy 配置根部（任何 `[[proxies]]` 前）加入：
+
+```toml
+transport.quic.congestionMode = "brutal"
+transport.quic.targetMbps = 16
+transport.quic.maxMbps = 24
+```
+
+原有 `[proxies.natTraversal] bindPort = 39999` 保持不变。境外 x-ui 页面将拥塞模式选为 Brutal、目标 16 Mbps、上限 24 Mbps，保存时自动生成境外 Visitor 对应配置；它仍然只通过本机 `127.0.0.1:40000` WARP SOCKS5 传输 STUN、打洞和 QUIC 数据，拒绝任何直连退路。境内外的 QUIC 发送方向相互独立，配置不影响 frpc/frps 的 TCP 控制连接，不需改官方 frps 0.69.0。
+
+Brutal 是有界的目标速率策略（最长 5 秒丢包采样、最高 64 Mbps 配置、8 MiB 发送窗口上限），不能保证跨境高峰期更快。需要退回稳定模式时，境内删除以上三项，境外 x-ui 选择「CUBIC / 默认」，然后重启两端 frpc。两端无需调整 Python/Go 的 RSX3 协议。
+
 - Python：`RSX3 metric open_tcp confirm_ms`、`slow_drain` 和 `tcp_summary`（双向字节数/耗时）；RSX2 还记录 `window_wait`、`browser_drain`、发送排队/缓冲 drain 时长。
 - Go：`RSX3 metric open_tcp warp_ms visitor_ms data_auth_ms`、`tcp_summary`（WARP 流量字节数）；RSX2 还有 `warp_connect`、`RSX metric frame_write queued_ms write_ms`。超过 100ms 的写入/等待会输出摘要；不记录 Token、密码或 payload。
 - QUIC：在**两端 frpc 的进程环境中**设置 `QLOGDIR` 为仅管理员可读目录（Linux 推荐 `chmod 700`），重启 frpc 后会生成 quic-go 原生 `*.sqlog`。其 JSON-seq 事件包含 RTT、ACK/loss、拥塞窗口/恢复/packet size。日志可能在 QUIC 连接关闭前保持缓冲；qlog 含连接元数据，需妥善保存。

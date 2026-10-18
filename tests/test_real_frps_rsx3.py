@@ -223,6 +223,15 @@ auth.token = "{AUTH}"
 log.to = "console"
 log.level = "info"
 """
+        brutal = os.getenv("RSX3_TEST_BRUTAL", "") == "1"
+        if brutal:
+            # Both independently paced XTCP QUIC senders, not the
+            # frpc-to-frps control channel and not native VPS UDP.
+            common += """
+transport.quic.congestionMode = "brutal"
+transport.quic.targetMbps = 16
+transport.quic.maxMbps = 24
+"""
         proxy = common + f"""
 [[proxies]]
 name = "rsx3_node"
@@ -296,4 +305,9 @@ udpProxyURL = "socks5://127.0.0.1:{self.warp.port}"
         outside = (self.base / "outside-frpc.log").read_text(errors="replace")
         self.assertIn("assistedAddresses: []", outside)
         self.assertIn("XTCP tunnel handshake ready", outside)
+        if brutal:
+            inside = (self.base / "inside-frpc.log").read_text(errors="replace")
+            self.assertIn("XTCP Proxy QUIC congestion=brutal", inside)
+            self.assertIn("XTCP Visitor QUIC congestion=brutal", outside)
+            print("BOUNDED_BRUTAL_BOTH_XTCP_ENDPOINTS_CONFIRMED")
         print("QUIC_QLOG_CREATED_AND_WARP_ONLY_PUBLIC_FALLBACK_DISABLED")

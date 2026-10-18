@@ -86,3 +86,11 @@ jobs:
           REVERSE_SOCKS_EXIT_BIN: ${{ runner.temp }}/reverse-socks-exit
           RSX3_BULK_BYTES: '1048576'
         run: python -S -m unittest -v tests.test_real_frps_rsx3
+      - name: Verify bounded Brutal on both XTCP Proxy and WARP Visitor
+        env:
+          RSX3_TEST_FRPS_BIN: ${{ runner.temp }}/frps069/frp_0.69.0_linux_amd64/frps
+          RSX3_TEST_FRPC_BIN: ${{ runner.temp }}/custom-frpc
+          REVERSE_SOCKS_EXIT_BIN: ${{ runner.temp }}/reverse-socks-exit
+          RSX3_BULK_BYTES: '1048576'
+          RSX3_TEST_BRUTAL: '1'
+        run: python -S -m unittest -v tests.test_real_frps_rsx3
