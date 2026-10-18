@@ -13,6 +13,7 @@ import struct
 import time
 
 from . import protocol as p
+from . import diagnostics as diag
 from .scheduler import FairFrameWriter
 from .rsx3 import TCPSessionV3, TunnelV3, accept_control, accept_data, bridge_tcp
 
@@ -258,10 +259,12 @@ class DatagramLink(asyncio.DatagramProtocol):
 
     def datagram_received(self, data, addr):
         if addr != self.allowed_peer:
+            if self.node.metrics: self.node.metrics.udp_drops["wrong_local_peer"] += 1
             return
         try:
             sid, packet = p.decode_link_datagram(data)
         except ValueError:
+            if self.node.metrics: self.node.metrics.udp_drops["invalid_or_oversize"] += 1
             return
         tunnel = self.node.tunnel
         if not tunnel or not tunnel.alive:
@@ -269,15 +272,22 @@ class DatagramLink(asyncio.DatagramProtocol):
         session = tunnel.sessions.get(sid)
         if isinstance(session, UDPSession) and not session.closed.is_set():
             session.relay.forward(packet)
+            if self.node.metrics: self.node.metrics.counters["udp_received"] += 1
 
 
 class Node:
     def __init__(self, token: str, socks_host="127.0.0.1", socks_port=1080,
                  mux_host="127.0.0.1", mux_port=9312,
-                  udp_port=9314, frpc_udp_port=9313, protocol="rsx3"):
+                  udp_port=9314, frpc_udp_port=9313, protocol="rsx3",
+                  diagnostics=False, frpc_diagnostics_addr="127.0.0.1:9320"):
         if len(token) < 16:
             raise ValueError("REVERSE_SOCKS_TOKEN must contain at least 16 characters")
         self.token = token.encode()
+        self.metrics = diag.Metrics() if diagnostics else None
+        self.frpc_diagnostics_addr = frpc_diagnostics_addr
+        if self.metrics:
+            diag.LocalFRPC(frpc_diagnostics_addr, diag.local_token(token))
+            LOG.addHandler(self.metrics)
         if protocol not in ("rsx2", "rsx3"):
             raise ValueError("protocol must be rsx2 or rsx3")
         self.protocol = protocol
@@ -306,10 +316,10 @@ class Node:
         return self
 
     async def stop(self):
+        if self.metrics: LOG.removeHandler(self.metrics)
         for server in (self.socks_server, self.mux_server):
             if server:
                 server.close()
-                await server.wait_closed()
         if self.udp_transport:
             self.udp_transport.close()
         if self.tunnel:
@@ -318,6 +328,12 @@ class Node:
                 await asyncio.wait_for(self.tunnel.writer.wait_closed(), 3)
             except (ConnectionError, OSError, asyncio.TimeoutError):
                 pass
+        for server in (self.socks_server, self.mux_server):
+            if server:
+                try:
+                    await asyncio.wait_for(server.wait_closed(), 3)
+                except asyncio.TimeoutError:
+                    LOG.warning("local listener shutdown still has closing connections")
 
     @property
     def socks_port(self):
@@ -332,8 +348,13 @@ class Node:
         return self.udp_transport.get_extra_info("sockname")[1]
 
     def send_udp(self, sid: int, packet: bytes):
-        data = p.encode_link_datagram(sid, packet)
+        try:
+            data = p.encode_link_datagram(sid, packet)
+        except ValueError:
+            if self.metrics: self.metrics.udp_drops["invalid_or_oversize"] += 1
+            raise
         self.udp_transport.sendto(data, ("127.0.0.1", self.frpc_udp_port))
+        if self.metrics: self.metrics.counters["udp_sent"] += 1
 
     async def _accept_agent(self, reader, writer):
         if self.protocol == "rsx3":
@@ -346,6 +367,8 @@ class Node:
                     await accept_control(self, reader, writer)
                 elif preface == b"R3D1":
                     await accept_data(self, reader, writer)
+                elif preface == diag.PREFACE:
+                    await diag.accept_diagnostics(self, reader, writer)
                 else:
                     raise PermissionError("unrecognized RSX3 stream preface")
             except asyncio.IncompleteReadError:
@@ -528,6 +551,9 @@ async def run():
     parser = argparse.ArgumentParser(description="RSX3 per-TCP-stream QUIC + DATAGRAM SOCKS5 NAT node")
     parser.add_argument("--protocol", choices=("rsx3", "rsx2"), default="rsx3",
                         help="RSX3 independent XTCP/QUIC streams (default), RSX2 legacy control mux")
+    parser.add_argument("--diagnostics", action="store_true", help="enable bounded diagnostics on a separate authenticated RSX3 stream")
+    parser.add_argument("--frpc-diagnostics", default="127.0.0.1:9320")
+    parser.add_argument("--print-diagnostics-config", action="store_true", help="print local frpc diagnostics TOML; do not start listeners")
     parser.add_argument("--socks", default="127.0.0.1:1080", help="local SOCKS5 bind")
     parser.add_argument("--mux", default="127.0.0.1:9312", help="frpc XTCP proxy target")
     parser.add_argument("--udp-bind", default="127.0.0.1:9314",
@@ -538,6 +564,12 @@ async def run():
     token = os.environ.get("REVERSE_SOCKS_TOKEN", "")
     if not token:
         parser.error("set REVERSE_SOCKS_TOKEN")
+    if args.print_diagnostics_config:
+        diag.LocalFRPC(args.frpc_diagnostics, diag.local_token(token))
+        print('diagnostics.enabled = true')
+        print('diagnostics.listenAddr = ' + __import__('json').dumps(args.frpc_diagnostics))
+        print('diagnostics.token = ' + __import__('json').dumps(diag.local_token(token)))
+        return
     socks_host, socks_port = args.socks.rsplit(":", 1)
     mux_host, mux_port = args.mux.rsplit(":", 1)
     udp_host, udp_port = args.udp_bind.rsplit(":", 1)
@@ -546,7 +578,8 @@ async def run():
         parser.error("UDP endpoints must be 127.0.0.1")
     node = await Node(token, socks_host, int(socks_port),
                       mux_host, int(mux_port), int(udp_port),
-                      int(frpc_port), protocol=args.protocol).start()
+                      int(frpc_port), protocol=args.protocol, diagnostics=args.diagnostics,
+                      frpc_diagnostics_addr=args.frpc_diagnostics).start()
     LOG.info("%s SOCKS5 %s:%d; XTCP TCP %s:%d; DATAGRAM UDP 127.0.0.1:%d -> %d",
              args.protocol.upper(),
              socks_host, node.socks_port, mux_host, node.mux_port,

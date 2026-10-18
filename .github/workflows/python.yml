@@ -37,7 +37,7 @@ jobs:
           go-version: '1.26.8'
       - name: Build RSX3/RSX2 Go agent from the companion x-ui PR
         run: |
-          git clone --depth 1 --branch gpt/xtcp-reverse-socks-exit \
+          git clone --depth 1 --branch main \
             https://github.com/qqq694637644/x-ui.git "$RUNNER_TEMP/x-ui"
           cd "$RUNNER_TEMP/x-ui"
           go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle'
@@ -61,7 +61,7 @@ jobs:
           go-version: '1.26.8'
       - name: Build matching private frpc XTCP QUIC fork
         run: |
-          git clone --depth 1 --branch gpt/warp-socks5-ipv6-unspecified \
+          git clone --depth 1 --branch dev \
             https://github.com/qqq694637644/frp.git "$RUNNER_TEMP/frp"
           cd "$RUNNER_TEMP/frp"
           CGO_ENABLED=0 go build -tags 'frpc,noweb' -o "$RUNNER_TEMP/custom-frpc" ./cmd/frpc
@@ -75,7 +75,7 @@ jobs:
           "$RUNNER_TEMP/frps069/frp_0.69.0_linux_amd64/frps" --version | grep -F '0.69.0'
       - name: Build matching x-ui Go Exit Agent
         run: |
-          git clone --depth 1 --branch gpt/xtcp-reverse-socks-exit \
+          git clone --depth 1 --branch main \
             https://github.com/qqq694637644/x-ui.git "$RUNNER_TEMP/x-ui"
           cd "$RUNNER_TEMP/x-ui"
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/reverse-socks-exit" ./cmd/reverse-socks-exit
