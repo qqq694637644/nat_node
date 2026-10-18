@@ -56,9 +56,10 @@ class TunnelV3:
         self.next_id = secrets.randbelow(0xFFFFFFFF - 1)
         self.alive = True
         self.diagnostics_peer = None
+        self.diagnostics_ready = asyncio.Event()
 
     def register(self, kind, *args):
-        # Imports here avoid a circular import with the RSX2 UDP implementation.
+        # Imports here avoid a circular import with the shared SOCKS5 UDP relay.
         from .node import MAX_SESSIONS
         if not self.alive or len(self.sessions) >= MAX_SESSIONS:
             raise ConnectionError("RSX3 tunnel closed or session limit reached")
@@ -196,9 +197,19 @@ async def accept_control(node, reader, writer):
     writer.write(b"\x00" + tunnel.epoch)
     await writer.drain()
     LOG.info("RSX3 control connected epoch=%s", tunnel.epoch.hex()[:8])
+    async def require_paired_diagnostics():
+        try:
+            await asyncio.wait_for(tunnel.diagnostics_ready.wait(), 12)
+        except asyncio.TimeoutError:
+            LOG.error("RSX3 Diagnostics version/capability mismatch: matching Go Agent and frpc are required")
+            writer.close()
+    watchdog = asyncio.create_task(require_paired_diagnostics()) if node.metrics else None
     try:
         await tunnel.read_loop()
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
+            await asyncio.gather(watchdog, return_exceptions=True)
         if node.tunnel is tunnel:
             node.tunnel = None
 

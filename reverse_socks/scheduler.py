@@ -1,7 +1,7 @@
-"""Bounded, control-priority, per-session-fair RSX frame writer.
+"""Bounded RSX3 control-only frame writer.
 
-Only this task writes to the underlying StreamWriter. No packet content, target
-hostnames, or authentication material is included in latency diagnostics.
+TCP data uses independent QUIC streams; only control messages use this
+serialized bounded queue. No application payload enters the control writer.
 """
 import asyncio
 from collections import deque
@@ -14,8 +14,6 @@ from . import protocol as p
 LOG = logging.getLogger("reverse_socks")
 
 CONTROL_LIMIT = 128
-DATA_LIMIT = 256
-PER_SESSION_LIMIT = 8
 SLOW_SECONDS = 0.100
 
 
@@ -33,9 +31,6 @@ class FairFrameWriter:
         self.writer = writer
         self.condition = asyncio.Condition()
         self.control = deque()
-        self.data = {}
-        self.round_robin = deque()
-        self.data_count = 0
         self.closed = False
         self.total_bytes = 0
         self.queue_wait_max = 0.0
@@ -45,31 +40,15 @@ class FairFrameWriter:
     async def send(self, kind: int, sid: int, payload: bytes = b""):
         if len(payload) > p.MAX_PAYLOAD:
             raise ValueError("RSX frame too large")
-        # FIN cannot overtake queued DATA of the same session. TCP_RESULT
-        # and WINDOW, on the other hand, are latency-sensitive control frames.
-        data_lane = kind in (p.TCP_DATA, p.TCP_FIN)
         start = time.monotonic()
         result = asyncio.get_running_loop().create_future()
         async with self.condition:
-            while not self.closed and (
-                (self.data_count >= DATA_LIMIT or
-                 len(self.data.get(sid, ())) >= PER_SESSION_LIMIT)
-                if data_lane else len(self.control) >= CONTROL_LIMIT
-            ):
+            while not self.closed and len(self.control) >= CONTROL_LIMIT:
                 await self.condition.wait()
             if self.closed:
                 raise ConnectionError("RSX writer closed")
             req = _Pending(kind, sid, payload, time.monotonic(), result)
-            if data_lane:
-                lane = self.data.get(sid)
-                if lane is None:
-                    lane = deque()
-                    self.data[sid] = lane
-                    self.round_robin.append(sid)
-                lane.append(req)
-                self.data_count += 1
-            else:
-                self.control.append(req)
+            self.control.append(req)
             self.condition.notify_all()
         elapsed = time.monotonic() - start
         if elapsed > SLOW_SECONDS:
@@ -79,21 +58,11 @@ class FairFrameWriter:
 
     async def _next(self):
         async with self.condition:
-            while not self.closed and not self.control and not self.data_count:
+            while not self.closed and not self.control:
                 await self.condition.wait()
             if self.closed:
                 return None
-            if self.control:
-                req = self.control.popleft()
-            else:
-                sid = self.round_robin.popleft()
-                lane = self.data[sid]
-                req = lane.popleft()
-                self.data_count -= 1
-                if lane:
-                    self.round_robin.append(sid)
-                else:
-                    del self.data[sid]
+            req = self.control.popleft()
             self.condition.notify_all()
             return req
 
@@ -133,11 +102,7 @@ class FairFrameWriter:
             async with self.condition:
                 self.closed = True
                 leftovers = list(self.control)
-                leftovers.extend(item for lane in self.data.values() for item in lane)
                 self.control.clear()
-                self.data.clear()
-                self.round_robin.clear()
-                self.data_count = 0
                 self.condition.notify_all()
             for req in leftovers:
                 if not req.result.done():

@@ -1,8 +1,8 @@
 # RSX3：单 TCP 会话独立 XTCP QUIC Stream
 
-本项目的**新版默认协议为 RSX3**，参考 Hysteria 2 的设计理念（不直接复制第三方源码）：每个 SOCKS5 TCP CONNECT 使用自己的 QUIC 双向 Stream，避免不同业务共享单条可靠字节流的队头阻塞。原有 RSX2 需显式选择 `--protocol rsx2`。RSX3 仍保留单独的、经过认证的控制 Stream 管理 TCP 会话及 UDP 会话，UDP 数据只走 QUIC DATAGRAM；官方 frps 0.69.0 不需要修改。
+本项目**仅支持 RSX3**，参考 Hysteria 2 的设计理念（不直接复制第三方源码）：每个 SOCKS5 TCP CONNECT 使用自己的 QUIC 双向 Stream，避免不同业务共享单条可靠字节流的队头阻塞。已删除旧协议代码、回退和选择入口。RSX3 保留单独的、经过认证的控制 Stream 管理 TCP 会话及 UDP 会话，UDP 数据只走 QUIC DATAGRAM；官方 frps 0.69.0 不需要修改。
 
-**不允许 VPS 源地址泄漏：** 境外 frpc 控制连接、STUN、打洞、QUIC 一律经本机 WARP SOCKS5；x-ui Go Agent 对目标的 TCP CONNECT / UDP ASSOCIATE 也仅经 WARP SOCKS5；失败时拒绝请求，绝不允许原生公网 UDP、绕过 WARP 或 fallbackTo。
+**frpc 隧道隐私约束：** 境外 frpc 控制连接、STUN、打洞、QUIC 一律经本机 WARP SOCKS5，禁止原生公网 UDP 或回退；Go Agent 的最终目标 TCP/UDP 可通过 Xray SOCKS5 按域名分流，指定网站走 WARP，其他网站可按用户配置使用 VPS freedom 原生公网出口。配置的 Xray 目标代理不可用时 Go Agent 不绕过它直连。
 
 ## RSX3 连接模型
 
@@ -60,7 +60,7 @@ peerAddr = "127.0.0.1:9314"
 
 ## 境外 x-ui / Go Agent
 
-x-ui 「反向 SOCKS5 / WARP」页面选择 **RSX3**，确认境内 Python 已同时升级后保存并重启受管 Go Agent。第三方 frps 的配置不需要改变，境外 WARP SOCKS5 原有访问策略也不改变。两端协议不匹配会拒绝认证，不会隐式降低为 RSX2。
+x-ui 「反向 SOCKS5 / WARP」页面只提供 **RSX3**，必须确认境内 Python 已配套升级后再重启 Go Agent。第三方 frps 配置不变。两端协议不匹配时拒绝认证；开启 Diagnostics 时能力/版本及诊断流也必须在限定时间内完成认证，否则拒绝业务而不是悄悄缺少指标。
 
 独立启动 Go Agent（和 x-ui 受管实例二选一）：
 
@@ -72,7 +72,7 @@ export REVERSE_SOCKS_TOKEN='<与境内 Python 完全相同的共享密钥>'
   -warp-socks 127.0.0.1:40000
 ```
 
-旧协议回退为**人工操作**：境内 Python `--protocol rsx2` 与境外 x-ui 页面「RSX2」同时选择（独立 Agent：`-protocol rsx2`），不能单侧切换。RSX2 现在也有有界队列（控制优先、每会话轮询）、32 帧窗口流控与性能统计，但 TCP 仍然全部复用单条 QUIC Stream。
+RSX3 是唯一协议：必须同步升级两端代码；诊断开关可以关闭，但旧数据转发协议不再支持。
 
 ## 流控与诊断
 
@@ -90,10 +90,10 @@ transport.quic.maxMbps = 24
 
 Brutal 是有界的目标速率策略（最长 5 秒丢包采样、8 MiB 发送窗口上限）。**新版移除了旧 64 Mbps 人为上限**，可设置 96/128、128/192、256/512 等更高目标/上限（单位 Mbps）；仅保留约 73,786 Mbps 的 Go 整数运算安全边界以及已有 QUIC 背压/窗口。提高配置值不能保证高峰期更快，切忌直接调到远超带宽的数值。建议境外从实际稳定的 64/64 起逐级测试，境内独立设置上传速率。需要退回稳定模式时，境内删除以上三项，境外 x-ui 选择「CUBIC / 默认」，然后重启两端 frpc。两端无需调整 Python/Go 的 RSX3 协议。
 
-- Python：`RSX3 metric open_tcp confirm_ms`、`slow_drain` 和 `tcp_summary`（双向字节数/耗时）；RSX2 还记录 `window_wait`、`browser_drain`、发送排队/缓冲 drain 时长。
-- Go：`RSX3 metric open_tcp warp_ms visitor_ms data_auth_ms`、`tcp_summary`（WARP 流量字节数）；RSX2 还有 `warp_connect`、`RSX metric frame_write queued_ms write_ms`。超过 100ms 的写入/等待会输出摘要；不记录 Token、密码或 payload。
+- Python：`RSX3 metric open_tcp confirm_ms`、`slow_drain` 和 `tcp_summary`（双向字节数/耗时）。
+- Go：`RSX3 metric open_tcp target_ms visitor_ms data_auth_ms`、`tcp_summary`。超过 100ms 的等待会输出摘要；业务目标可以是 WARP 或 Xray，取决于 Go Agent `targetSocksAddr`。
 - QUIC：在**两端 frpc 的进程环境中**设置 `QLOGDIR` 为仅管理员可读目录（Linux 推荐 `chmod 700`），重启 frpc 后会生成 quic-go 原生 `*.sqlog`。其 JSON-seq 事件包含 RTT、ACK/loss、拥塞窗口/恢复/packet size。日志可能在 QUIC 连接关闭前保持缓冲；qlog 含连接元数据，需妥善保存。
-- WARP 检测：境外单独测试 `curl --socks5-hostname 127.0.0.1:40000` 的 10 MiB 下载；境内测 `curl.exe --socks5-hostname 127.0.0.1:1080` 并比较。只查短请求 IP 无法证明持续吞吐正常。公网出口应是 WARP IP 而非 VPS 源 IP。
+- WARP 检测：境外单独测试 `curl --socks5-hostname 127.0.0.1:40000` 的 10 MiB 下载；境内测 `curl.exe --socks5-hostname 127.0.0.1:1080` 并比较。最终网站出口可能依 Xray 规则显示 VPS IP；不能把它与 frpc 对 frps/STUN 隐藏 VPS 源 IP 的要求混为一谈。
 - QUIC 数据窗口有上限，采用更保守的基础 UDP MTU 避免 SOCKS5/WARP 封装黑洞。网络丢包、RTT 与拥塞窗口仍可能使跨境速度极慢；RSX3 并不保证 YouTube 必然流畅。
 
 SOCKS5 UDP ASSOCIATE 的每个 QUIC DATAGRAM 最大 **1100 字节（含会话 ID）**，不支持分片，不回退 UDP-over-TCP。应用必须确实使用 SOCKS5；无 TUN 时浏览器不能自动继承命令行 curl 的代理参数。
@@ -107,4 +107,4 @@ $env:REVERSE_SOCKS_EXIT_BIN = '..\rsx3-exit-agent.exe'
 python -S -m unittest -v tests.test_end_to_end
 ```
 
-`tests.test_end_to_end` 同时测试 RSX3、RSX2；包含 10 MiB 回环吞吐、并发连接、半关闭、慢读者、认证失败、WARP 故障、UDP ASSOCIATE。再指定环境变量 `RSX3_TEST_FRPS_BIN`、`RSX3_TEST_FRPC_BIN`、`REVERSE_SOCKS_EXIT_BIN`，可运行 `tests.test_real_frps_rsx3` 实际启动**未修改的 frps v0.69.0 + 两个真实 frpc + 假 WARP SOCKS5**，测试 P2P QUIC、独立 TCP Stream、并发、qlog 生成。回环模拟不等同于境内到 VPS 的真实跨境体验。
+`tests.test_end_to_end` 仅测试 RSX3，包括 10 MiB 回环吞吐、并发连接、半关闭、慢读者、认证失败、WARP 故障、UDP ASSOCIATE。再指定环境变量 `RSX3_TEST_FRPS_BIN`、`RSX3_TEST_FRPC_BIN`、`REVERSE_SOCKS_EXIT_BIN`，运行 `tests.test_real_frps_rsx3` 启动**未修改的 frps v0.69.0 + 两个真实 frpc + 假 WARP SOCKS5**，测试 P2P QUIC、独立 TCP Stream、并发、qlog。回环模拟不等同于真实跨境体验。

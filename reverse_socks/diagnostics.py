@@ -30,8 +30,8 @@ from . import protocol as p
 SCHEMA = "rsx-diagnostics/1"
 PREFACE = b"R3G1"
 DOMAIN = b"RSX3-diag-v1"
-CAP_REQUEST = b"RD-CAP/1 "
-CAP_REPLY = b"RD-OK/1 "
+CAP_REQUEST = b"RD-CAP/2 "
+CAP_REPLY = b"RD-OK/2 "
 MAX_FRAME = 65535
 MAX_HISTORY = 256
 MAX_BENCH = 50_000_000
@@ -436,6 +436,7 @@ async def accept_diagnostics(node, reader, writer):
         raise PermissionError("diagnostic HMAC failed")
     peer = Peer(node); peer.writer = writer; tunnel.diagnostics_peer = peer
     writer.write(b"\x00"); await writer.drain()
+    tunnel.diagnostics_ready.set()
     lock = asyncio.Lock(); tasks = {}
 
     async def request(msg):

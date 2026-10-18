@@ -1,19 +1,15 @@
-"""RSX2: TCP control frames and unreliable QUIC UDP datagrams."""
+"""RSX3 control frames and independent unreliable QUIC UDP datagrams."""
 
 import ipaddress
 import struct
 
-MAGIC = b"RSX2"
 HEADER = struct.Struct("!BII")
 MAX_PAYLOAD = 65535
 TCP_CHUNK = 16384
 
 OPEN_TCP = 1
 TCP_RESULT = 2
-TCP_DATA = 3
-TCP_FIN = 4
 TCP_RST = 5
-TCP_WINDOW = 11  # receiver grants another DATA frame only after drain()
 OPEN_UDP = 6
 UDP_RESULT = 7
 UDP_CLOSE = 8

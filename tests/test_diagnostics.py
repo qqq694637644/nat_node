@@ -68,7 +68,8 @@ class DiagnosticsWireTests(unittest.IsolatedAsyncioTestCase):
                                frpc_udp_port=free_udp_port(), diagnostics=True,
                                frpc_diagnostics_addr="127.0.0.1:1").start()
         self.epoch = secrets.token_bytes(16)
-        self.control = SimpleNamespace(alive=True, epoch=self.epoch, diagnostics_peer=None)
+        self.control = SimpleNamespace(alive=True, epoch=self.epoch, diagnostics_peer=None,
+                                       diagnostics_ready=asyncio.Event())
         self.node.tunnel = self.control
         self.opened = []
 

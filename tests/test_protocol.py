@@ -4,6 +4,12 @@ from reverse_socks import protocol as p
 
 
 class ProtocolTest(unittest.TestCase):
+    def test_rejects_deprecated_wire_protocols(self):
+        from reverse_socks.node import Node
+        for protocol in ("rsx2", "", "rsx1", "unknown"):
+            with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, "RSX3"):
+                Node("this-is-a-valid-test-token", protocol=protocol)
+
     def test_address_round_trip(self):
         for host, port in (("127.0.0.1", 53), ("2001:db8::1", 443),
                            ("example.com", 65535), ("xn--bcher-kva.de", 80)):
@@ -30,11 +36,10 @@ class ProtocolTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             p.udp_packet("127.0.0.1", 53, b"x" * p.MAX_PAYLOAD)
 
-    def test_rsx2_udp_datagram_session_and_mtu(self):
+    def test_rsx3_udp_datagram_session_and_mtu(self):
         packet = p.udp_packet("1.1.1.1", 53, b"DNS")
         encoded = p.encode_link_datagram(13579, packet)
         self.assertEqual(p.decode_link_datagram(encoded), (13579, packet))
-        self.assertEqual(p.MAGIC, b"RSX2")
         with self.assertRaises(ValueError):
             p.encode_link_datagram(0, packet)
         with self.assertRaises(ValueError):

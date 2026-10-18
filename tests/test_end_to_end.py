@@ -177,8 +177,6 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         await self.echo_tcp(b"after-keepalive")
 
     async def test_invalid_data_stream_does_not_replace_authenticated_agent(self):
-        if self.PROTOCOL != "rsx3":
-            self.skipTest("RSX3 preface is not supported by RSX2")
         original = self.node.tunnel
         _, writer = await asyncio.open_connection("127.0.0.1", self.node.mux_port)
         writer.write(b"R3D1" + b"Z" * 16 + (1).to_bytes(4, "big"))
@@ -191,8 +189,7 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
 
     async def test_slow_warp_stream_uses_backpressure_not_reset(self):
         # 10ms per 16KiB chunk on both directions exceeds the original
-        # 32-frame queue under continuous echo load. RSX2 now waits for
-        # receiver-granted credits instead of terminating the TCP session.
+        # Real QUIC streams and TCP backpressure must not reset the session.
         self.warp.delay_seconds = 0.01
         large = bytes(range(256)) * 8192  # 2 MiB
         await asyncio.wait_for(asyncio.gather(
@@ -262,9 +259,3 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         _, writer, _, _ = await self.socks(3, "0.0.0.0", 0, expected=5)
         writer.close()
         await writer.wait_closed()
-
-
-@unittest.skipUnless(EXIT_BIN and Path(EXIT_BIN).is_file(),
-                      "set REVERSE_SOCKS_EXIT_BIN to the compiled Go agent")
-class LegacyGoPythonIntegration(GoPythonIntegration):
-    PROTOCOL = "rsx2"
