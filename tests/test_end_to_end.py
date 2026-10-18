@@ -36,6 +36,8 @@ class EchoUDP(asyncio.DatagramProtocol):
 @unittest.skipUnless(EXIT_BIN and Path(EXIT_BIN).is_file(),
                      "set REVERSE_SOCKS_EXIT_BIN to the compiled Go agent")
 class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
+    PROTOCOL = "rsx3"
+
     async def asyncSetUp(self):
         self.node_app_port = free_udp_port()
         self.node_frpc_port = free_udp_port()
@@ -43,7 +45,8 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         self.exit_frpc_port = free_udp_port()
         self.node = await Node(
             TOKEN, socks_port=0, mux_port=0,
-            udp_port=self.node_app_port, frpc_udp_port=self.node_frpc_port).start()
+            udp_port=self.node_app_port, frpc_udp_port=self.node_frpc_port,
+            protocol=self.PROTOCOL).start()
         self.tcp = await asyncio.start_server(self._tcp_echo, "127.0.0.1", 0)
         loop = asyncio.get_running_loop()
         self.udp_transport, _ = await loop.create_datagram_endpoint(
@@ -85,6 +88,7 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         env = dict(os.environ, REVERSE_SOCKS_TOKEN=TOKEN)
         self.go = await asyncio.create_subprocess_exec(
             EXIT_BIN, "-visitor", f"127.0.0.1:{self.node.mux_port}",
+            "-protocol", self.PROTOCOL,
             "-udp-bind", f"127.0.0.1:{self.exit_app_port}",
             "-udp-frpc", f"127.0.0.1:{self.exit_frpc_port}",
             "-warp-socks", f"127.0.0.1:{self.warp.port}",
@@ -152,6 +156,38 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*(self.echo_tcp(f"session-{i}".encode() * 1000)
                                for i in range(20)))
         self.assertGreaterEqual(self.warp.tcp_connects, 21)
+
+    async def test_large_tcp_download_and_control_isolation(self):
+        # Ten megabytes crossing the fake local WARP and Go/Python stack.
+        # This checks correct copy-backpressure at bulk sizes, rather than
+        # counting successful tiny IP-discovery requests as throughput.
+        payload = bytes(range(256)) * (10 * 1024 * 1024 // 256)
+        await asyncio.wait_for(asyncio.gather(
+            self.echo_tcp(payload),
+            *(self.echo_tcp(f"small-{i}".encode() * 128) for i in range(10)),
+        ), 35)
+
+    async def test_empty_visitor_keepalive_does_not_replace_control_agent(self):
+        original = self.node.tunnel
+        _, writer = await asyncio.open_connection("127.0.0.1", self.node.mux_port)
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0.05)
+        self.assertIs(self.node.tunnel, original)
+        await self.echo_tcp(b"after-keepalive")
+
+    async def test_invalid_data_stream_does_not_replace_authenticated_agent(self):
+        if self.PROTOCOL != "rsx3":
+            self.skipTest("RSX3 preface is not supported by RSX2")
+        original = self.node.tunnel
+        _, writer = await asyncio.open_connection("127.0.0.1", self.node.mux_port)
+        writer.write(b"R3D1" + b"Z" * 16 + (1).to_bytes(4, "big"))
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0.05)
+        self.assertIs(self.node.tunnel, original)
+        await self.echo_tcp(b"after-bad-stream")
 
     async def test_slow_warp_stream_uses_backpressure_not_reset(self):
         # 10ms per 16KiB chunk on both directions exceeds the original
@@ -226,3 +262,9 @@ class GoPythonIntegration(unittest.IsolatedAsyncioTestCase):
         _, writer, _, _ = await self.socks(3, "0.0.0.0", 0, expected=5)
         writer.close()
         await writer.wait_closed()
+
+
+@unittest.skipUnless(EXIT_BIN and Path(EXIT_BIN).is_file(),
+                      "set REVERSE_SOCKS_EXIT_BIN to the compiled Go agent")
+class LegacyGoPythonIntegration(GoPythonIntegration):
+    PROTOCOL = "rsx2"

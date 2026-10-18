@@ -1,6 +1,8 @@
-# nat_node — Python 3.13 RSX2 reverse SOCKS5
+# nat_node — Python 3.13 RSX3 / RSX2 reverse SOCKS5
 
-**破坏式升级：仅支持 RSX2。** 境内 frpc 仍为 XTCP **Proxy**，境外 frpc 仍为主动发起连接的 XTCP **Visitor**，第三方 frps 完全不改。两端 frpc 必须部署 [已合并到 frp/dev 的 QUIC DATAGRAM 定制客户端](https://github.com/qqq694637644/frp/pull/1)。
+**最新版默认 RSX3：每条 TCP 连接独立 XTCP QUIC Stream、减少 RSX2 单流队头阻塞。** 完整升级、Windows UDP 39999、防泄漏、qlog 与测试指南请先阅读 [RSX3.md](RSX3.md)。下文保留原 RSX2 的历史配置与协议说明；只有显式使用 `python -m reverse_socks --protocol rsx2`，并把 x-ui Go Agent 同步设置为 `rsx2` 时适用。**升级 RSX3 前需两端同时切换协议，不能只替换一端。**
+
+**以下为 RSX2 兼容模式的旧版文档。** 境内 frpc 仍为 XTCP **Proxy**，境外 frpc 仍为主动发起连接的 XTCP **Visitor**，第三方 frps 完全不改。两端 frpc 必须部署支持 QUIC DATAGRAM 的定制客户端。
 
 TCP 经 XTCP QUIC Stream，UDP 经 QUIC DATAGRAM（不经过可靠 TCP 字节流）。境外出口 Go Agent 由 [x-ui PR #18](https://github.com/qqq694637644/x-ui/pull/18) 提供，所有目标连接强制通过 VPS 本地 WARP SOCKS5 的 CONNECT / UDP ASSOCIATE；WARP 不可用则拒绝出站，无直连回退。
 
