@@ -11,7 +11,8 @@ import unittest
 import zipfile
 
 from reverse_socks import diagnostics as d
-from reverse_socks.node import Node
+from reverse_socks.node import Node, UDPSession
+from reverse_socks.rsx3 import TunnelV3, TCPSessionV3
 from tests.test_real_frps_rsx3 import free_udp_port
 
 TOKEN = "diagnostics-unit-test-secret-32-characters"
@@ -135,6 +136,37 @@ class DiagnosticsWireTests(unittest.IsolatedAsyncioTestCase):
         response = await self.rpc(reader, writer, "raw_benchmark", {"bytes": 1000000, "direction": "download"})
         self.assertIn("error", response)
         self.assertTrue(self.control.alive)
+
+    async def test_peer_disconnect_revokes_readiness_without_killing_existing_sessions(self):
+        # This is the real authenticated diagnostic stream, not a mock of
+        # its .clear() call. The business control stays alive on disconnect.
+        reader, writer = await self.connect()
+        self.assertTrue(self.control.diagnostics_ready.is_set())
+        self.control.node = self.node
+        self.control.sessions = {}
+        self.control.next_id = 0
+        session_factory = lambda sid: SimpleNamespace(sid=sid)
+        existing = TunnelV3.register(self.control, session_factory)
+        writer.close()
+        await writer.wait_closed()
+        for _ in range(100):
+            if self.control.diagnostics_peer is None and not self.control.diagnostics_ready.is_set():
+                break
+            await asyncio.sleep(.01)
+        self.assertFalse(self.control.diagnostics_ready.is_set())
+        self.assertIsNone(self.control.diagnostics_peer)
+        self.assertTrue(self.control.alive)
+        self.assertIn(existing.sid, self.control.sessions)
+        with self.assertRaisesRegex(ConnectionError, "Diagnostics disconnected"):
+            TunnelV3.register(self.control, TCPSessionV3)
+        with self.assertRaisesRegex(ConnectionError, "Diagnostics disconnected"):
+            TunnelV3.register(self.control, UDPSession, object())
+        # A reauthenticated diagnostic stream alone re-enables new sessions.
+        _, replacement = await self.connect()
+        self.assertTrue(self.control.diagnostics_ready.is_set())
+        self.assertNotEqual(TunnelV3.register(self.control, session_factory).sid, existing.sid)
+        replacement.close()
+        await replacement.wait_closed()
 
 
 if __name__ == "__main__":

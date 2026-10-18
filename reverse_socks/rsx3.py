@@ -63,6 +63,8 @@ class TunnelV3:
         from .node import MAX_SESSIONS
         if not self.alive or len(self.sessions) >= MAX_SESSIONS:
             raise ConnectionError("RSX3 tunnel closed or session limit reached")
+        if self.node.metrics is not None and not self.diagnostics_ready.is_set():
+            raise ConnectionError("RSX3 Diagnostics disconnected; new TCP/UDP sessions refused")
         self.next_id = (self.next_id % 0xFFFFFFFF) + 1
         while self.next_id in self.sessions:
             self.next_id = (self.next_id % 0xFFFFFFFF) + 1
@@ -162,6 +164,7 @@ class TunnelV3:
             LOG.info("RSX3 agent disconnected: %s", exc)
         finally:
             self.alive = False
+            self.diagnostics_ready.clear()
             if self.node.metrics: self.node.metrics.counters["udp_active"] = 0
             if self.diagnostics_peer is not None:
                 writer = getattr(self.diagnostics_peer, "writer", None)

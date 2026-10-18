@@ -27,6 +27,8 @@ python -m reverse_socks --protocol rsx3 --diagnostics `
 
 **不要给 9320、9321 开公网端口。** Python 通过原有 MUX 9312 接收一个独立的、经过 epoch+nonce+HMAC 认证的诊断流。新诊断数据不塞进业务控制帧队列。启用 Diagnostics 后必须双方能力协商并完成诊断流 HMAC 认证，否则拒绝新的业务连接、在 12 秒内断开，不能静默降级；用户可以关闭 Diagnostics 采集，但 RSX3 业务协议没有旧版回退。
 
+**持续就绪约束：** 诊断流断线后 `diagnostics_ready` 立即撤销，已存在的 TCP 会话可继续完成，新 TCP/UDP 会话会被拒绝，直到下一条诊断流通过相同 RSX3 epoch 的 HMAC 认证后重新就绪。仅有第一次能力协商成功不能代表持续在线。境外 STUN 配置仍可使用 `域名:端口`；域名解析沿用当前系统解析器，不表示已经防止 VPS 本机 DNS 查询。
+
 ## 支持的功能
 
 ### 实时指标

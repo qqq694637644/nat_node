@@ -435,8 +435,6 @@ async def accept_diagnostics(node, reader, writer):
     if not hmac.compare_digest(expected, supplied) or not tunnel.alive:
         raise PermissionError("diagnostic HMAC failed")
     peer = Peer(node); peer.writer = writer; tunnel.diagnostics_peer = peer
-    writer.write(b"\x00"); await writer.drain()
-    tunnel.diagnostics_ready.set()
     lock = asyncio.Lock(); tasks = {}
 
     async def request(msg):
@@ -457,6 +455,11 @@ async def accept_diagnostics(node, reader, writer):
             tasks.pop(ident, None)
 
     try:
+        # The acknowledgement itself can fail. Keep it inside the cleanup
+        # boundary so a half-connected peer never pins diagnostics_ready or
+        # blocks a later replacement stream.
+        writer.write(b"\x00"); await writer.drain()
+        tunnel.diagnostics_ready.set()
         while tunnel.alive:
             msg = await read_frame(reader)
             ident = msg.get("id", "")
@@ -471,6 +474,11 @@ async def accept_diagnostics(node, reader, writer):
                 continue
             tasks[ident] = asyncio.create_task(request(msg))
     finally:
+        # Drop readiness before any potentially slow RPC task cancellation
+        # or stream shutdown. A disconnected peer must never authorize new
+        # business TCP/UDP sessions, even while the RSX3 control stays alive.
+        if getattr(tunnel, "diagnostics_peer", None) is peer:
+            tunnel.diagnostics_ready.clear()
         for task in list(tasks.values()):
             task.cancel()
         await asyncio.gather(*list(tasks.values()), return_exceptions=True)
