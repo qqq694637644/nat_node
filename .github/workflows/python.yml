@@ -25,7 +25,7 @@ jobs:
           "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m reverse_socks --help
 
   cross-language-warp:
-    name: RSX3/RSX2 Go/Python + fake WARP SOCKS5 + DATAGRAM
+    name: RSX3-only Go/Python + fake WARP SOCKS5 + DATAGRAM
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,9 +35,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.8'
-      - name: Build RSX3/RSX2 Go agent from the companion x-ui PR
+      - name: Build RSX3-only Go agent from the matching Diagnostics PR
         run: |
-          git clone --depth 1 --branch main \
+          git clone --depth 1 --branch gpt/rsx3-diagnostics \
             https://github.com/qqq694637644/x-ui.git "$RUNNER_TEMP/x-ui"
           cd "$RUNNER_TEMP/x-ui"
           go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle'
@@ -75,7 +75,7 @@ jobs:
           "$RUNNER_TEMP/frps069/frp_0.69.0_linux_amd64/frps" --version | grep -F '0.69.0'
       - name: Build matching x-ui Go Exit Agent
         run: |
-          git clone --depth 1 --branch main \
+          git clone --depth 1 --branch gpt/rsx3-diagnostics \
             https://github.com/qqq694637644/x-ui.git "$RUNNER_TEMP/x-ui"
           cd "$RUNNER_TEMP/x-ui"
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/reverse-socks-exit" ./cmd/reverse-socks-exit
