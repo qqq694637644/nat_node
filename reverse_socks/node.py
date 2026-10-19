@@ -299,11 +299,14 @@ class Node:
             transport.close()
 
 
-async def run():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="RSX3 per-TCP-stream QUIC + DATAGRAM SOCKS5 NAT node")
     parser.add_argument("--protocol", choices=("rsx3",), default="rsx3",
                         help="RSX3 independent XTCP/QUIC streams (only supported protocol)")
     parser.add_argument("--diagnostics", action="store_true", help="enable bounded diagnostics on a separate authenticated RSX3 stream")
+    parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"),
+                        type=str.lower, default="warning",
+                        help="console log verbosity (default: warning); independent of --diagnostics")
     parser.add_argument("--frpc-diagnostics", default="127.0.0.1:9320")
     parser.add_argument("--print-diagnostics-config", action="store_true", help="print local frpc diagnostics TOML; do not start listeners")
     parser.add_argument("--socks", default="127.0.0.1:1080", help="local SOCKS5 bind")
@@ -312,10 +315,15 @@ async def run():
                         help="Python RSX3 QUIC DATAGRAM socket (frpc datagram.peerAddr)")
     parser.add_argument("--udp-frpc", default="127.0.0.1:9313",
                         help="frpc datagram.listenAddr")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+async def run(args=None):
+    if args is None:
+        args = parse_args()
     token = os.environ.get("REVERSE_SOCKS_TOKEN", "")
     if not token:
-        parser.error("set REVERSE_SOCKS_TOKEN")
+        raise SystemExit("set REVERSE_SOCKS_TOKEN")
     if args.print_diagnostics_config:
         diag.LocalFRPC(args.frpc_diagnostics, diag.local_token(token))
         print('diagnostics.enabled = true')
@@ -327,7 +335,7 @@ async def run():
     udp_host, udp_port = args.udp_bind.rsplit(":", 1)
     frpc_host, frpc_port = args.udp_frpc.rsplit(":", 1)
     if udp_host != "127.0.0.1" or frpc_host != "127.0.0.1":
-        parser.error("UDP endpoints must be 127.0.0.1")
+        raise SystemExit("UDP endpoints must be 127.0.0.1")
     node = await Node(token, socks_host, int(socks_port),
                       mux_host, int(mux_port), int(udp_port),
                       int(frpc_port), protocol=args.protocol, diagnostics=args.diagnostics,
@@ -341,10 +349,25 @@ async def run():
                              node.mux_server.serve_forever())
 
 
+def configure_logging(level="warning", diagnostics=False):
+    """Keep console noise independent of optional in-memory Diagnostics.
+
+    INFO/DEBUG records are preserved in Diagnostics reports when enabled,
+    even when the console is configured to print WARNING and above.
+    """
+    console_level = getattr(logging, level.upper())
+    console = logging.StreamHandler()
+    console.setLevel(console_level)
+    console.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logging.basicConfig(level=console_level, handlers=[console], force=True)
+    LOG.setLevel(logging.DEBUG if diagnostics else console_level)
+
+
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    args = parse_args()
+    configure_logging(args.log_level, diagnostics=args.diagnostics)
     try:
-        asyncio.run(run())
+        asyncio.run(run(args))
     except KeyboardInterrupt:
         pass
 

@@ -278,9 +278,9 @@ async def bridge_tcp(session, browser_reader, browser_writer):
                 max_drain[direction] = max(max_drain[direction], latency)
                 if session.metrics: session.metrics.progress(session.metric, direction, len(data), read_wait, latency)
                 if latency > SLOW_SECONDS:
-                    LOG.warning("RSX3 metric slow_drain sid=%d direction=%s drain_ms=%.1f",
-                                session.sid, ("upload", "download")[direction],
-                                latency * 1000)
+                    LOG.debug("RSX3 metric slow_drain sid=%d direction=%s drain_ms=%.1f",
+                              session.sid, ("upload", "download")[direction],
+                              latency * 1000)
             if dst.can_write_eof():
                 dst.write_eof()
                 await dst.drain()
