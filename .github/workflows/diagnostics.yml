@@ -1,0 +1,38 @@
+name: RSX Diagnostics Python
+
+on:
+  push:
+    branches: [gpt/rsx3-diagnostics]
+  pull_request:
+    branches: [main]
+
+jobs:
+  diagnostics:
+    name: Python 3.13 diagnostics / ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify standard-library-only diagnostics, authentication and data bounds
+        run: python -S -m unittest -v tests.test_diagnostics tests.test_dependencies tests.test_protocol tests.test_scheduler
+      - name: Package Python source and deployment guide
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          git archive --format=zip --output=nat-node-diagnostics.zip HEAD
+          sha256sum nat-node-diagnostics.zip > nat-node-diagnostics.sha256
+      - name: Upload source release
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nat-node-diagnostics-python313
+          path: |
+            nat-node-diagnostics.zip
+            nat-node-diagnostics.sha256
+          if-no-files-found: error
+          retention-days: 7

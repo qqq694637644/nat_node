@@ -1,4 +1,4 @@
-"""Loopback SOCKS5 CONNECT / UDP ASSOCIATE fake WARP for RSX2 integration.
+"""Loopback SOCKS5 CONNECT / UDP ASSOCIATE fake WARP for RSX3 integration.
 
 This is deliberately a *test proxy*, not an alternative egress implementation:
 the Go agent must use it to reach the TCP/UDP echo targets.
