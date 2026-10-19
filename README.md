@@ -25,6 +25,8 @@ python -m reverse_socks --protocol rsx3 `
 
 `--diagnostics` 与控制台日志等级是两个独立开关：不启用 Diagnostics 时不创建诊断采集器；启用 Diagnostics 但使用默认 `warning` 时，控制台仍安静，诊断报告仍会保留 INFO/DEBUG 记录。无需安装其他 Python 包。
 
+**Windows Python 3.13 连接关闭修复：** 远端发送 TCP RST 时，Python 标准库 Proactor 的 `_call_connection_lost` 有时会在 `socket.shutdown()` 抛出 `[WinError 10054]`，导致整段异常回溯并跳过 socket 清理。Windows 入口现使用专用 Proactor socket transport，只在关闭清理阶段容忍 WinError 10054、同时保证 socket 关闭及 server 解除关联；其他异常照常报告。不会切换到存在 Windows select() socket 数量限制的 SelectorEventLoop，也不改变 RSX3/QUIC 协议。
+
 **不能使用旧客户端协议**：`--protocol` 仅接受 `rsx3`。遇到认证版本不匹配应更新配套组件，而不是回退协议。
 
 ## 可选 Diagnostics

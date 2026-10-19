@@ -367,7 +367,15 @@ def main():
     args = parse_args()
     configure_logging(args.log_level, diagnostics=args.diagnostics)
     try:
-        asyncio.run(run(args))
+        if os.name == "nt":
+            # Python 3.13 Proactor's TCP shutdown callback can raise
+            # WinError 10054 after a peer RST and skip socket cleanup.
+            # Keep IOCP/Proactor capacity; patch only this loop's TCP teardown.
+            from .windows_asyncio import RSX3WindowsProactorEventLoop
+            with asyncio.Runner(loop_factory=RSX3WindowsProactorEventLoop) as runner:
+                runner.run(run(args))
+        else:
+            asyncio.run(run(args))
     except KeyboardInterrupt:
         pass
 

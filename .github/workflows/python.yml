@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/nat-node-venv"
           "$RUNNER_TEMP/nat-node-venv/bin/python" -m pip install --no-index --disable-pip-version-check -r requirements.txt
-          "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m unittest -v tests.test_dependencies tests.test_protocol tests.test_scheduler tests.test_logging
+          "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m unittest -v tests.test_dependencies tests.test_protocol tests.test_scheduler tests.test_logging tests.test_windows_asyncio
           "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m reverse_socks --help
 
   cross-language-warp:
