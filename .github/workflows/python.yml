@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/nat-node-venv"
           "$RUNNER_TEMP/nat-node-venv/bin/python" -m pip install --no-index --disable-pip-version-check -r requirements.txt
-          "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m unittest -v tests.test_dependencies tests.test_protocol tests.test_scheduler
+          "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m unittest -v tests.test_dependencies tests.test_protocol tests.test_scheduler tests.test_logging
           "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m reverse_socks --help
 
   cross-language-warp:
@@ -46,7 +46,7 @@ jobs:
       - name: Run real Go/Python + WARP SOCKS5 simulation
         env:
           REVERSE_SOCKS_EXIT_BIN: ${{ runner.temp }}/reverse-socks-exit
-        run: python -S -m unittest -v tests.test_dependencies tests.test_protocol tests.test_scheduler tests.test_end_to_end
+        run: python -S -m unittest -v tests.test_dependencies tests.test_protocol tests.test_scheduler tests.test_logging tests.test_end_to_end
 
   real-frps-rsx3:
     name: Official frps 0.69.0 + private frpc x2 + RSX3 + fake WARP

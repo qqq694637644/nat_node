@@ -25,6 +25,8 @@ python -m reverse_socks --protocol rsx3 --diagnostics `
 
 境外 x-ui 的反向 SOCKS5 页面打开 **RSX3 Diagnostics**，诊断地址保持 `127.0.0.1:9321`，保存应用。境外 token 自动生成。初次启用沿用原有保存/重启行为；后续自检、测速、录制、暂停采样都不主动重启转发进程。
 
+Python 控制台日志等级独立于 Diagnostics：默认 `--log-level warning`，不会刷每连接的 `tcp_summary` / `open_tcp`。需要查看会话日志可增加 `--log-level info`，需要观测写入等待等详细事件则增加 `--log-level debug`。即使控制台保持 `warning`，Diagnostics 启用后仍收集原始 INFO/DEBUG 记录用于按需报告；关闭 Diagnostics 不改变控制台等级。
+
 **不要给 9320、9321 开公网端口。** Python 通过原有 MUX 9312 接收一个独立的、经过 epoch+nonce+HMAC 认证的诊断流。新诊断数据不塞进业务控制帧队列。启用 Diagnostics 后必须双方能力协商并完成诊断流 HMAC 认证，否则拒绝新的业务连接、在 12 秒内断开，不能静默降级；用户可以关闭 Diagnostics 采集，但 RSX3 业务协议没有旧版回退。
 
 **持续就绪约束：** 诊断流断线后 `diagnostics_ready` 立即撤销，已存在的 TCP 会话可继续完成，新 TCP/UDP 会话会被拒绝，直到下一条诊断流通过相同 RSX3 epoch 的 HMAC 认证后重新就绪。仅有第一次能力协商成功不能代表持续在线。境外 STUN 配置仍可使用 `域名:端口`；域名解析沿用当前系统解析器，不表示已经防止 VPS 本机 DNS 查询。

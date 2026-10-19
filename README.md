@@ -19,6 +19,12 @@ python -m reverse_socks --protocol rsx3 `
   --udp-bind 127.0.0.1:9314 --udp-frpc 127.0.0.1:9313
 ```
 
+### 控制台日志等级
+
+默认 `--log-level warning`，只显示真正的警告和错误，不再为每条浏览器 TCP 会话打印 `RSX3 metric open_tcp`、`tcp_summary` 等 INFO 日志。需要排障时在原启动命令后添加 `--log-level info`（连接/会话信息）或 `--log-level debug`（包含 100ms 以上的写入等待、帧排队等性能事件）；`--log-level error` 只输出错误。
+
+`--diagnostics` 与控制台日志等级是两个独立开关：不启用 Diagnostics 时不创建诊断采集器；启用 Diagnostics 但使用默认 `warning` 时，控制台仍安静，诊断报告仍会保留 INFO/DEBUG 记录。无需安装其他 Python 包。
+
 **不能使用旧客户端协议**：`--protocol` 仅接受 `rsx3`。遇到认证版本不匹配应更新配套组件，而不是回退协议。
 
 ## 可选 Diagnostics

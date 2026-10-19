@@ -52,8 +52,8 @@ class FairFrameWriter:
             self.condition.notify_all()
         elapsed = time.monotonic() - start
         if elapsed > SLOW_SECONDS:
-            LOG.warning("RSX metric queue_backpressure kind=%d sid=%d wait_ms=%.1f",
-                        kind, sid, elapsed * 1000)
+            LOG.debug("RSX metric queue_backpressure kind=%d sid=%d wait_ms=%.1f",
+                      kind, sid, elapsed * 1000)
         return await result
 
     async def _next(self):
@@ -84,8 +84,8 @@ class FairFrameWriter:
                 self.drain_max = max(self.drain_max, drain_time)
                 self.total_bytes += len(req.data)
                 if elapsed > SLOW_SECONDS or drain_time > SLOW_SECONDS:
-                    LOG.warning("RSX metric frame_write kind=%d sid=%d queued_ms=%.1f drain_ms=%.1f",
-                                req.kind, req.sid, elapsed * 1000, drain_time * 1000)
+                    LOG.debug("RSX metric frame_write kind=%d sid=%d queued_ms=%.1f drain_ms=%.1f",
+                              req.kind, req.sid, elapsed * 1000, drain_time * 1000)
                 if not req.result.done():
                     req.result.set_result(None)
                 in_flight = None

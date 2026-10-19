@@ -2,7 +2,7 @@ name: RSX Diagnostics Python
 
 on:
   push:
-    branches: [gpt/rsx3-diagnostics]
+    branches: [gpt/rsx3-diagnostics, gpt/rsx3-configurable-log-level]
   pull_request:
     branches: [main]
 
@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Verify standard-library-only diagnostics, authentication and data bounds
-        run: python -S -m unittest -v tests.test_diagnostics tests.test_dependencies tests.test_protocol tests.test_scheduler
+        run: python -S -m unittest -v tests.test_diagnostics tests.test_dependencies tests.test_protocol tests.test_scheduler tests.test_logging
       - name: Package Python source and deployment guide
         if: matrix.os == 'ubuntu-latest'
         run: |
