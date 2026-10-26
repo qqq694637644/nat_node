@@ -191,12 +191,14 @@ async def authenticate_control(reader, writer, token: bytes):
         raise PermissionError("RSX3 control HMAC authentication failed")
 
 
-async def accept_control(node, reader, writer):
+async def accept_control(node, reader, writer, on_authenticated=None):
     await authenticate_control(reader, writer, node.token)
     if node.tunnel is not None and node.tunnel.alive:
         raise ConnectionError("RSX3 agent already connected")
     tunnel = TunnelV3(reader, writer, node)
     node.tunnel = tunnel
+    if on_authenticated is not None:
+        on_authenticated(tunnel)
     if node.metrics: node.metrics.epoch = tunnel.epoch.hex()
     writer.write(b"\x00" + tunnel.epoch)
     await writer.drain()

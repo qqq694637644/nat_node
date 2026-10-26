@@ -12,7 +12,7 @@ from aioquic.quic.events import DatagramFrameReceived
 from . import protocol as p
 from .brutal import install_brutal, register_brutal, validate_rates
 from .node import Node, UDPSession
-from .rsx3 import TunnelV3, accept_data, authenticate_control
+from .rsx3 import accept_control, accept_data
 
 LOG = logging.getLogger("reverse_socks")
 
@@ -59,19 +59,14 @@ class DirectProtocol(QuicConnectionProtocol):
             writer.close()
 
     async def _control(self, reader, writer):
-        await authenticate_control(reader, writer, self.node.token)
-        if self.node.tunnel is not None and self.node.tunnel.alive:
-            raise PermissionError("one RSX3 control connection at a time")
-        tunnel = TunnelV3(reader, writer, self.node)
-        self.node.tunnel = tunnel
-        self.node.direct_owner = self
-        writer.write(b"\x00" + tunnel.epoch)
-        await writer.drain()
         try:
-            await tunnel.read_loop()
+            # Reuse the existing RSX3 challenge/HMAC, epoch allocation,
+            # control loop and shutdown path; QUIC only changes transport.
+            await accept_control(
+                self.node, reader, writer,
+                on_authenticated=lambda tunnel: setattr(self.node, "direct_owner", self))
         finally:
-            if self.node.tunnel is tunnel:
-                self.node.tunnel = None
+            if self.node.direct_owner is self:
                 self.node.direct_owner = None
 
     def quic_event_received(self, event):
