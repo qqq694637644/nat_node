@@ -31,7 +31,7 @@ from reverse_socks.protocol import encode_link_datagram, udp_packet
 from reverse_socks.rsx3 import TCPSessionV3
 from reverse_socks.node import UDPSession
 from reverse_socks.brutal import (
-    BrutalCongestionControl, BrutalPacer, validate_rates, MAX_CWND
+    BrutalCongestionControl, BrutalPacer, validate_rates, MAX_CWND, MIN_CWND
 )
 
 TOKEN = "direct-quic-test-secret-long-enough"
@@ -74,6 +74,7 @@ class DirectQuicTest(unittest.IsolatedAsyncioTestCase):
             validate_rates(25, 24)
         cc = BrutalCongestionControl(max_datagram_size=1200,
                                      target_mbps=16, max_mbps=24)
+        self.assertEqual(cc.congestion_window, MIN_CWND)
         self.assertEqual(cc.rate, 16 * 125_000)
         cc.on_rtt_measurement(now=1, rtt=3)
         self.assertLessEqual(cc.congestion_window, MAX_CWND)

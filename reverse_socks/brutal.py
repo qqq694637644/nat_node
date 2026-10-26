@@ -33,7 +33,9 @@ class BrutalCongestionControl(QuicCongestionControl):
         super().__init__(max_datagram_size=max_datagram_size)
         self.target_bytes_per_second = target_mbps * 125_000
         self.max_bytes_per_second = max_mbps * 125_000
-        self._rtt = 0.1
+        # Match the existing FRP sender: stay at minimum cwnd until there
+        # is a measured RTT. Do not assume a 100 ms path before handshake.
+        self._rtt = None
         # Same five one-second slots used by the existing frpc Brutal sender.
         # Fixed-size storage avoids one Python object allocation per packet.
         self._samples = [(-1, 0, 0)] * SAMPLE_SECONDS
@@ -64,6 +66,9 @@ class BrutalCongestionControl(QuicCongestionControl):
         self._update_window()
 
     def _update_window(self):
+        if self._rtt is None:
+            self.congestion_window = MIN_CWND
+            return
         self.congestion_window = max(
             MIN_CWND,
             min(MAX_CWND, int(self.rate * max(self._rtt, 0.001) * 2))
@@ -94,7 +99,10 @@ class BrutalCongestionControl(QuicCongestionControl):
 
     def on_rtt_measurement(self, *, now, rtt):
         if rtt > 0:
-            self._rtt = rtt
+            # The aioquic callback reports the latest RTT; its recovery
+            # tracker uses a 1/8 EWMA for smoothed RTT.
+            self._rtt = (rtt if self._rtt is None else
+                         0.875 * self._rtt + 0.125 * rtt)
             self._update_window()
 
 
