@@ -24,6 +24,22 @@ jobs:
           "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m unittest -v tests.test_dependencies tests.test_protocol tests.test_scheduler tests.test_logging tests.test_windows_asyncio
           "$RUNNER_TEMP/nat-node-venv/bin/python" -S -m reverse_socks --help
 
+  direct-quic-brutal:
+    name: RSX3 direct IPv6 QUIC Brutal / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install optional direct-QUIC dependency
+        run: python -m pip install -r requirements-direct-quic.txt
+      - name: Test bounded Brutal pacer, authenticated QUIC Streams and DATAGRAM
+        run: python -m unittest -v tests.test_direct_quic
+
   cross-language-warp:
     name: RSX3-only Go/Python + fake WARP SOCKS5 + DATAGRAM
     runs-on: ubuntu-latest
@@ -35,9 +51,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.8'
-      - name: Build RSX3-only Go agent from the matching Diagnostics PR
+      - name: Build RSX3-only Go agent from main (legacy FRP remains supported)
         run: |
-          git clone --depth 1 --branch gpt/rsx3-diagnostics \
+          git clone --depth 1 --branch main \
             https://github.com/qqq694637644/x-ui.git "$RUNNER_TEMP/x-ui"
           cd "$RUNNER_TEMP/x-ui"
           go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle'
@@ -75,7 +91,7 @@ jobs:
           "$RUNNER_TEMP/frps069/frp_0.69.0_linux_amd64/frps" --version | grep -F '0.69.0'
       - name: Build matching x-ui Go Exit Agent
         run: |
-          git clone --depth 1 --branch gpt/rsx3-diagnostics \
+          git clone --depth 1 --branch main \
             https://github.com/qqq694637644/x-ui.git "$RUNNER_TEMP/x-ui"
           cd "$RUNNER_TEMP/x-ui"
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/reverse-socks-exit" ./cmd/reverse-socks-exit

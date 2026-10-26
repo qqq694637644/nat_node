@@ -1,2 +1,4 @@
 # Optional: only needed for --direct-quic (legacy FRP mode remains stdlib-only).
-aioquic>=1.2.0,<2
+# Brutal pacing uses aioquic 1.7.0's congestion-control registration and
+# recovery pacer interfaces; changes must be tested before upgrading.
+aioquic==1.7.0

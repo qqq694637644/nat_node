@@ -321,6 +321,10 @@ def parse_args(argv=None):
                         help="IPv6 QUIC UDP listener, e.g. [::]:8080")
     parser.add_argument("--quic-cert", help="PEM TLS certificate with DDNS DNS SAN")
     parser.add_argument("--quic-key", help="PEM private key for direct QUIC")
+    parser.add_argument("--brutal-target-mbps", type=int, default=16,
+                        help="direct QUIC Brutal target Mbps (default: 16)")
+    parser.add_argument("--brutal-max-mbps", type=int, default=24,
+                        help="direct QUIC Brutal hard pacing cap Mbps (default: 24)")
     return parser.parse_args(argv)
 
 
@@ -342,6 +346,11 @@ async def run(args=None):
         if not args.quic_cert or not args.quic_key:
             raise SystemExit("direct QUIC requires --quic-cert and --quic-key")
         from .direct_quic import DirectNode  # aioquic is optional for the legacy FRP mode
+        from .brutal import validate_rates
+        try:
+            validate_rates(args.brutal_target_mbps, args.brutal_max_mbps)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
         from pathlib import Path
         if not Path(args.quic_cert).is_file() or not Path(args.quic_key).is_file():
             raise SystemExit("direct QUIC certificate or key file does not exist")
@@ -352,7 +361,9 @@ async def run(args=None):
         socks_host, socks_port = args.socks.rsplit(":", 1)
         node = await DirectNode(token, socks_host=socks_host, socks_port=int(socks_port),
                                 listen_host=host, listen_port=int(port),
-                                cert_path=args.quic_cert, key_path=args.quic_key).start()
+                                cert_path=args.quic_cert, key_path=args.quic_key,
+                                brutal_target_mbps=args.brutal_target_mbps,
+                                brutal_max_mbps=args.brutal_max_mbps).start()
         LOG.info("RSX3 direct IPv6 QUIC listening on [%s]:%s", host, port)
         try:
             async with node.socks_server:

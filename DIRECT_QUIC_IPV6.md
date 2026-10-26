@@ -1,4 +1,4 @@
-# RSX3 Direct QUIC over IPv6 + DDNS (independent of FRP)
+# RSX3 IPv6 DDNS Direct QUIC with bounded Brutal (independent of FRP)
 
 This is a **new opt-in mode**. The existing `python -m reverse_socks` FRP/XTCP
 invocation, local 9312/9313/9314 ports, STUN, WARP and diagnostics remain
@@ -6,7 +6,7 @@ unchanged and require **no additional pip packages**.
 
 ## Network model
 
-`@text
+~~~text
 Windows: App -> SOCKS5 127.0.0.1:1080 -> Python RSX3
                             |
               IPv6 [::]:8080 / UDP / QUIC
@@ -15,7 +15,7 @@ Windows: App -> SOCKS5 127.0.0.1:1080 -> Python RSX3
                             |
 VPS Linux: x-ui Go QUIC Client -> native VPS TCP/UDP
                                 -> optional loopback Xray SOCKS5
-`@
+~~~
 
 - No frpc, frps, STUN, XTCP, WARP transport or IPv4 DMZ is needed in this mode.
 - Each SOCKS5 TCP session uses a separate QUIC bidirectional stream.
@@ -23,6 +23,10 @@ VPS Linux: x-ui Go QUIC Client -> native VPS TCP/UDP
 - Linux verifies a pinned leaf certificate SHA-256, DNS SAN, certificate dates,
   and the existing RSX3 per-stream HMAC.
 - The separate FRP Diagnostics feature is not implemented for Direct QUIC yet.
+- Both QUIC senders **always use bounded Brutal**: the Go sender reuses the
+  custom FRP `xtcpbrutal.NewSender`; the Python aioquic sender uses matching
+  five-second ACK/loss sampling, bounded pacing and an 8 MiB congestion window.
+  The legacy FRP mode retains its original configurable congestion settings.
 
 ## Windows PowerShell 7
 
@@ -33,7 +37,7 @@ changes. This project does **not** manage DNS provider credentials or update API
 
 From the `nat_node` checkout:
 
-`@powershell
+~~~powershell
 py -m pip install -r requirements-direct-quic.txt
 New-Item -ItemType Directory -Force C:\rsx3 | Out-Null
 py scripts/create_direct_quic_cert.py --hostname rsx3.example.com --cert C:\rsx3\quic-cert.pem --key C:\rsx3\quic-key.pem
@@ -41,8 +45,9 @@ py scripts/create_direct_quic_cert.py --hostname rsx3.example.com --cert C:\rsx3
 $env:REVERSE_SOCKS_TOKEN = '<same-strong-random-secret-on-Linux>'
 py -m reverse_socks --protocol rsx3 --direct-quic `
   --socks 127.0.0.1:1080 --quic-listen "[::]:8080" `
-  --quic-cert C:\rsx3\quic-cert.pem --quic-key C:\rsx3\quic-key.pem
-`@
+  --quic-cert C:\rsx3\quic-cert.pem --quic-key C:\rsx3\quic-key.pem `
+  --brutal-target-mbps 16 --brutal-max-mbps 24
+~~~
 
 Copy only the printed certificate fingerprint (never the private key) to x-ui.
 Restrict the private key file to the Windows service account. The helper
@@ -61,8 +66,10 @@ candidate, not a protocol requirement; use any IPv6-reachable UDP port.
 Open **反向 SOCKS5 / IPv6 DDNS**, not the historical **反向 SOCKS5 / WARP** page.
 
 1. Fill DDNS hostname, IPv6 UDP port, SHA-256 certificate fingerprint and RSX3 token.
-2. Select native VPS TCP/UDP egress or explicit local Xray SOCKS5 (e.g. 127.0.0.1:40001).
-3. Enable and save. Linux resolves only AAAA and establishes authenticated QUIC/RSX3.
+2. Set VPS→Windows Brutal `targetMbps` and `maxMbps`, which are independent
+   of Windows→VPS parameters. Both directions require 1 <= target <= max.
+3. Select native VPS TCP/UDP egress or explicit local Xray SOCKS5 (e.g. 127.0.0.1:40001).
+4. Enable and save. Linux resolves only AAAA and establishes authenticated QUIC/RSX3.
 
 On reconnect the Go client resolves AAAA anew; every 60 seconds it checks
 whether the active IPv6 is still in the DDNS set, reconnecting on removal.
@@ -72,11 +79,12 @@ as with the legacy settings, the token is persisted to the panel DB.
 
 ## Optional standalone Go smoke command
 
-`@bash
+~~~bash
 REVERSE_SOCKS_TOKEN='<same-strong-random-secret>' \
 ./reverse-socks-exit -direct-ddns rsx3.example.com -direct-port 8080 \
-  -direct-cert-sha256 '<64-hex-digits>' -native-egress
-`@
+  -direct-cert-sha256 '<64-hex-digits>' -native-egress \
+  -direct-brutal-target-mbps 16 -direct-brutal-max-mbps 24
+~~~
 
 Do not run standalone and x-ui managed direct clients simultaneously.
 Without `-direct-ddns` the standalone program keeps the original FRP
@@ -84,10 +92,10 @@ transport without alteration.
 
 ## Validation and rollback
 
-`@powershell
+~~~powershell
 py -m unittest tests.test_direct_quic
 py -S -m unittest tests.test_dependencies tests.test_protocol
-`@
+~~~
 
 The first test requires aioquic; the second confirms the legacy mode still
 uses only the Python standard library. For rollback, disable the IPv6/DDNS

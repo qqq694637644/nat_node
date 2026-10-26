@@ -21,7 +21,7 @@ class DependencyContractTest(unittest.TestCase):
         for source in source_files:
             # Optional IPv6/QUIC mode is loaded only after --direct-quic;
             # the original FRP/XTCP runtime must remain stdlib-only.
-            if source.name == "direct_quic.py":
+            if source.name in ("direct_quic.py", "brutal.py"):
                 continue
             tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
             with self.subTest(module=source.name):

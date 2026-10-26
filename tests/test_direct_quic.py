@@ -13,6 +13,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 try:
     from aioquic.asyncio import connect
@@ -29,6 +30,9 @@ except ImportError:
 from reverse_socks.protocol import encode_link_datagram, udp_packet
 from reverse_socks.rsx3 import TCPSessionV3
 from reverse_socks.node import UDPSession
+from reverse_socks.brutal import (
+    BrutalCongestionControl, BrutalPacer, validate_rates, MAX_CWND
+)
 
 TOKEN = "direct-quic-test-secret-long-enough"
 
@@ -63,6 +67,27 @@ def make_cert(path):
 
 @unittest.skipUnless(connect is not None, "aioquic optional dependency not installed")
 class DirectQuicTest(unittest.IsolatedAsyncioTestCase):
+    def test_brutal_bounds_and_actual_pacer(self):
+        with self.assertRaises(ValueError):
+            validate_rates(0, 24)
+        with self.assertRaises(ValueError):
+            validate_rates(25, 24)
+        cc = BrutalCongestionControl(max_datagram_size=1200,
+                                     target_mbps=16, max_mbps=24)
+        self.assertEqual(cc.rate, 16 * 125_000)
+        cc.on_rtt_measurement(now=1, rtt=3)
+        self.assertLessEqual(cc.congestion_window, MAX_CWND)
+        pkt = SimpleNamespace(sent_bytes=1200)
+        for _ in range(50):
+            cc.on_packet_sent(packet=pkt)
+        for _ in range(25):
+            cc.on_packet_acked(now=2, packet=pkt)
+        cc.on_packets_lost(now=2, packets=[pkt] * 25)
+        self.assertEqual(cc.rate, 20 * 125_000)  # 50% ACK clamped at 80%
+        pacer = BrutalPacer(max_datagram_size=1200, sender=cc)
+        self.assertAlmostEqual(pacer.packet_time, 1200 / cc.rate, places=8)
+        self.assertLessEqual(cc.rate, cc.max_bytes_per_second)
+
     async def test_authenticated_streams_and_datagram(self):
         from reverse_socks.direct_quic import DirectNode
         with tempfile.TemporaryDirectory() as tmp:
@@ -79,6 +104,9 @@ class DirectQuicTest(unittest.IsolatedAsyncioTestCase):
                 cfg.verify_mode = ssl.CERT_NONE
                 async with connect("::1", port, configuration=cfg,
                                    create_protocol=TestProtocol) as client:
+                    direct = next(iter(node.protocols))
+                    self.assertIsInstance(direct.brutal_sender, BrutalCongestionControl)
+                    self.assertIsInstance(direct._quic._loss._pacer, BrutalPacer)
                     reader, writer = await client.create_stream()
                     writer.write(b"RSX3")
                     await writer.drain()

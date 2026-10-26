@@ -4,16 +4,13 @@ Requires aioquic. Authenticated RSX3 streams still use the original protocol.
 """
 import asyncio
 import logging
-import socket
-import struct
-
 from aioquic.asyncio import serve
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import DatagramFrameReceived
 
 from . import protocol as p
-from . import diagnostics as diag
+from .brutal import install_brutal, register_brutal, validate_rates
 from .node import Node, UDPSession
 from .rsx3 import TunnelV3, accept_data, authenticate_control
 
@@ -26,6 +23,11 @@ class DirectProtocol(QuicConnectionProtocol):
         self.tasks = set()
         kwargs["stream_handler"] = self.stream_handler
         super().__init__(*args, **kwargs)
+        # Both directions use bounded Brutal; fail instead of silently falling
+        # back to aioquic's default congestion/pacing implementation.
+        self.brutal_sender = install_brutal(
+            self._quic, node.brutal_target_mbps, node.brutal_max_mbps
+        )
 
     def stream_handler(self, reader, writer):
         task = asyncio.create_task(self._run_stream(reader, writer))
@@ -96,7 +98,8 @@ class DirectNode(Node):
     """A separate runtime instance; the original Node and XTCP remain intact."""
 
     def __init__(self, token, *, socks_host="127.0.0.1", socks_port=1080,
-                 listen_host="::", listen_port=8080, cert_path, key_path):
+                 listen_host="::", listen_port=8080, cert_path, key_path,
+                 brutal_target_mbps=16, brutal_max_mbps=24):
         super().__init__(token, socks_host=socks_host, socks_port=socks_port)
         # Zero is supported for loopback integration tests (ephemeral port).
         if not 0 <= listen_port <= 65535:
@@ -105,6 +108,9 @@ class DirectNode(Node):
         self.listen_port = listen_port
         self.cert_path = cert_path
         self.key_path = key_path
+        validate_rates(brutal_target_mbps, brutal_max_mbps)
+        self.brutal_target_mbps = brutal_target_mbps
+        self.brutal_max_mbps = brutal_max_mbps
         self.quic_server = None
         self.direct_owner = None
         self.protocols = set()
@@ -117,6 +123,9 @@ class DirectNode(Node):
     async def start(self):
         configuration = QuicConfiguration(is_client=False, alpn_protocols=["rsx3-direct-v1"],
                                           max_datagram_frame_size=1200)
+        configuration.congestion_control_algorithm = register_brutal(
+            self.brutal_target_mbps, self.brutal_max_mbps
+        )
         configuration.load_cert_chain(self.cert_path, self.key_path)
         self.socks_server = await asyncio.start_server(self._socks_client, *self.socks_addr)
         try:
