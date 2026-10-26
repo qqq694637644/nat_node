@@ -19,6 +19,10 @@ class DependencyContractTest(unittest.TestCase):
         source_files = sorted((PROJECT_ROOT / "reverse_socks").glob("*.py"))
         self.assertTrue(source_files, "reverse_socks sources were not found")
         for source in source_files:
+            # Optional IPv6/QUIC mode is loaded only after --direct-quic;
+            # the original FRP/XTCP runtime must remain stdlib-only.
+            if source.name == "direct_quic.py":
+                continue
             tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
             with self.subTest(module=source.name):
                 for node in ast.walk(tree):
@@ -54,6 +58,12 @@ class DependencyContractTest(unittest.TestCase):
             "Document and review new third-party Python packages before "
             "adding them to nat_node",
         )
+
+    def test_direct_quic_optional_dependency_is_declared(self):
+        requirements = (PROJECT_ROOT / "requirements-direct-quic.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("aioquic", requirements)
 
 
 if __name__ == "__main__":

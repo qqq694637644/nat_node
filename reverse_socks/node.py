@@ -315,6 +315,12 @@ def parse_args(argv=None):
                         help="Python RSX3 QUIC DATAGRAM socket (frpc datagram.peerAddr)")
     parser.add_argument("--udp-frpc", default="127.0.0.1:9313",
                         help="frpc datagram.listenAddr")
+    parser.add_argument("--direct-quic", action="store_true",
+                        help="separate IPv6 QUIC listener; no frpc, frps, STUN or WARP transport")
+    parser.add_argument("--quic-listen", default="[::]:8080",
+                        help="IPv6 QUIC UDP listener, e.g. [::]:8080")
+    parser.add_argument("--quic-cert", help="PEM TLS certificate with DDNS DNS SAN")
+    parser.add_argument("--quic-key", help="PEM private key for direct QUIC")
     return parser.parse_args(argv)
 
 
@@ -329,6 +335,30 @@ async def run(args=None):
         print('diagnostics.enabled = true')
         print('diagnostics.listenAddr = ' + __import__('json').dumps(args.frpc_diagnostics))
         print('diagnostics.token = ' + __import__('json').dumps(diag.local_token(token)))
+        return
+    if args.direct_quic:
+        if args.diagnostics:
+            raise SystemExit("direct QUIC diagnostics are not implemented yet; omit --diagnostics")
+        if not args.quic_cert or not args.quic_key:
+            raise SystemExit("direct QUIC requires --quic-cert and --quic-key")
+        from .direct_quic import DirectNode  # aioquic is optional for the legacy FRP mode
+        from pathlib import Path
+        if not Path(args.quic_cert).is_file() or not Path(args.quic_key).is_file():
+            raise SystemExit("direct QUIC certificate or key file does not exist")
+        host, sep, port = args.quic_listen.rpartition(":")
+        host = host.strip("[]")
+        if not sep or not host or ":" not in host:
+            raise SystemExit("--quic-listen must contain an IPv6 host and port")
+        socks_host, socks_port = args.socks.rsplit(":", 1)
+        node = await DirectNode(token, socks_host=socks_host, socks_port=int(socks_port),
+                                listen_host=host, listen_port=int(port),
+                                cert_path=args.quic_cert, key_path=args.quic_key).start()
+        LOG.info("RSX3 direct IPv6 QUIC listening on [%s]:%s", host, port)
+        try:
+            async with node.socks_server:
+                await node.socks_server.serve_forever()
+        finally:
+            await node.stop()
         return
     socks_host, socks_port = args.socks.rsplit(":", 1)
     mux_host, mux_port = args.mux.rsplit(":", 1)

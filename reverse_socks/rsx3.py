@@ -174,10 +174,11 @@ class TunnelV3:
             self.sessions.clear()
             await self.sender.close()
             self.writer.close()
-            try:
-                await self.writer.wait_closed()
-            except (ConnectionError, OSError):
-                pass
+            if not hasattr(self.node, "direct_owner"):
+                try:
+                    await self.writer.wait_closed()
+                except (ConnectionError, OSError):
+                    pass
 
 
 async def authenticate_control(reader, writer, token: bytes):

@@ -2,6 +2,8 @@
 
 唯一协议为 **RSX3**：每条 TCP 连接使用独立 XTCP QUIC Stream，UDP 数据使用 QUIC DATAGRAM，控制流独立且经过 HMAC 认证。老版本协议及自动降级均已删除，必须同时升级 Windows Python、两端定制 frpc 与 VPS Go Exit Agent/x-ui。官方 frps v0.69.0 保持原样。
 
+**新增可选的原生 IPv6 + DDNS Direct QUIC 模式**：通过 `--direct-quic` 启动独立 QUIC Listener，让境外 x-ui Go Agent 直接访问动态 AAAA 地址，无需 FRPC/FRPS/STUN/XTCP 或隧道 WARP。该新模式单独安装 `requirements-direct-quic.txt` 中的 aioquic；**不改变下面的旧 FRP 部署方案，原先的 Python 标准库依赖及启动方式全部保留。** 详见 [Direct QUIC 部署说明](DIRECT_QUIC_IPV6.md)。
+
 ## 境内 Windows
 
 保持当前监听端口：
